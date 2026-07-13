@@ -1,13 +1,23 @@
 import { loadConfig } from "../core/config.js";
 import { resolveHome } from "../core/home.js";
-import { readArchivedUnits, resolveArchivedUnit, restoreArchivedUnit } from "../core/restore.js";
+import {
+	type ArchivedUnit,
+	type RestoreResult,
+	readArchivedUnits,
+	resolveArchivedUnit,
+	restoreArchivedUnit,
+} from "../core/restore.js";
+import { restoreFromRemote } from "../offbox/remote-restore.js";
 
-const USAGE = "Usage: blotter restore [--machine <name>] [--force] [<id-or-prefix>]\n";
+const USAGE =
+	"Usage: blotter restore [--machine <name>] [--force] [--from-remote --identity <file>] [<id-or-prefix>]\n";
 const MACHINE_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 interface RestoreOptions {
 	machine?: string;
 	force: boolean;
+	fromRemote: boolean;
+	identityPath?: string;
 	prefix?: string;
 }
 
@@ -17,7 +27,7 @@ function usageError(message: string): null {
 }
 
 function parseOptions(argv: string[]): RestoreOptions | null {
-	const options: RestoreOptions = { force: false };
+	const options: RestoreOptions = { force: false, fromRemote: false };
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
 		switch (argument) {
@@ -42,6 +52,24 @@ function parseOptions(argv: string[]): RestoreOptions | null {
 				}
 				options.force = true;
 				break;
+			case "--from-remote":
+				if (options.fromRemote) {
+					return usageError("--from-remote may only be passed once");
+				}
+				options.fromRemote = true;
+				break;
+			case "--identity": {
+				if (options.identityPath !== undefined) {
+					return usageError("--identity may only be passed once");
+				}
+				const value = argv[index + 1];
+				if (value === undefined || value.startsWith("--")) {
+					return usageError("--identity requires a file");
+				}
+				options.identityPath = value;
+				index += 1;
+				break;
+			}
 			default:
 				if (argument === undefined) {
 					return usageError("missing argument");
@@ -57,6 +85,12 @@ function parseOptions(argv: string[]): RestoreOptions | null {
 	}
 	if (options.force && options.prefix === undefined) {
 		return usageError("--force requires an id or prefix");
+	}
+	if (options.fromRemote && options.identityPath === undefined) {
+		return usageError("--from-remote requires --identity <file>");
+	}
+	if (!options.fromRemote && options.identityPath !== undefined) {
+		return usageError("--identity requires --from-remote");
 	}
 	return options;
 }
@@ -75,20 +109,7 @@ function printUnits(machine: string, units: Awaited<ReturnType<typeof readArchiv
 	}
 }
 
-export async function runRestore(argv: string[]): Promise<number> {
-	const options = parseOptions(argv);
-	if (options === null) {
-		return 1;
-	}
-	const config = loadConfig(resolveHome());
-	const machine = options.machine ?? config.machine;
-	const units = await readArchivedUnits(config, machine);
-	if (options.prefix === undefined) {
-		printUnits(machine, units);
-		return 0;
-	}
-	const unit = resolveArchivedUnit(units, options.prefix);
-	const result = await restoreArchivedUnit(unit, options.force);
+function printRestoreResult(unit: ArchivedUnit, result: RestoreResult): void {
 	for (const location of unit.supersededLocations) {
 		process.stdout.write(`superseded codex location: ${location}\n`);
 	}
@@ -98,5 +119,38 @@ export async function runRestore(argv: string[]): Promise<number> {
 	for (const hint of result.resumeHints) {
 		process.stdout.write(`${hint}\n`);
 	}
+}
+
+export async function runRestore(argv: string[]): Promise<number> {
+	const options = parseOptions(argv);
+	if (options === null) {
+		return 1;
+	}
+	const home = resolveHome();
+	const config = loadConfig(home);
+	const machine = options.machine ?? config.machine;
+	if (options.fromRemote) {
+		const remote = await restoreFromRemote({
+			config,
+			machine,
+			identityPath: options.identityPath!,
+			prefix: options.prefix,
+			force: options.force,
+		});
+		if (remote.kind === "listed") {
+			printUnits(machine, remote.units);
+		} else {
+			printRestoreResult(remote.unit, remote.restore);
+		}
+		return 0;
+	}
+	const units = await readArchivedUnits(config, machine);
+	if (options.prefix === undefined) {
+		printUnits(machine, units);
+		return 0;
+	}
+	const unit = resolveArchivedUnit(units, options.prefix);
+	const result = await restoreArchivedUnit(unit, options.force);
+	printRestoreResult(unit, result);
 	return 0;
 }

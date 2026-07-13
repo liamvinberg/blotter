@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface RunStamp {
 	startedAt: string;
@@ -9,9 +9,11 @@ export interface RunStamp {
 	archived: number;
 	unchanged: number;
 	failed: number;
+	offbox?: string;
 }
 
-async function writeAtomicJson(path: string, value: unknown): Promise<void> {
+export async function writeAtomicJson(path: string, value: unknown): Promise<void> {
+	await mkdir(dirname(path), { recursive: true });
 	const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
 	await writeFile(temporary, `${JSON.stringify(value, null, "\t")}\n`);
 	await rename(temporary, path);

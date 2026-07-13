@@ -185,7 +185,10 @@ describe("blotter sync", () => {
 		expect(result.code).toBe(0);
 		expect(result.stdout).toContain("archived 0, unchanged 0, failed 0");
 		expect(await readFile(`${logPath}.1`, "utf8")).toBe(oldLog);
-		expect((await readFile(logPath, "utf8")).split("\n").filter(Boolean)).toHaveLength(1);
+		const currentLog = (await readFile(logPath, "utf8")).split("\n").filter(Boolean);
+		expect(currentLog).toHaveLength(2);
+		expect(currentLog[0]).toContain("If this laptop dies");
+		expect(currentLog[1]).toContain("archived 0, unchanged 0, failed 0");
 	});
 
 	test("treats a live lock as successful contention without archiving", async () => {

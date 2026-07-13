@@ -5,6 +5,7 @@ import type { HarnessId, SessionUnit } from "../adapters/adapter.js";
 import { adapters } from "../adapters/registry.js";
 import { compressFile } from "./compress.js";
 import type { BlotterConfig } from "./config.js";
+import { errorMessage } from "./errors.js";
 import { type ArchiveIndexRecord, appendIndex, readIndex } from "./index.js";
 
 export interface ArchiveDecision {
@@ -63,10 +64,6 @@ function increment(result: SweepResult, harness: HarnessId, field: keyof Archive
 function userHome(env: NodeJS.ProcessEnv): string {
 	const configured = env.HOME?.trim();
 	return configured ? configured : homedir();
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 export async function sweep(config: BlotterConfig, env: NodeJS.ProcessEnv): Promise<SweepResult> {

@@ -6,3 +6,7 @@
 export class BlotterError extends Error {
 	override name = "BlotterError";
 }
+
+export function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}

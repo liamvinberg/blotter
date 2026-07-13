@@ -5,6 +5,7 @@ import { resolveHome } from "../core/home.js";
 import { withSyncLock } from "../core/lock.js";
 import { appendLog } from "../core/log.js";
 import { writeRunStamps } from "../core/stamps.js";
+import { publishOffbox, remindOffboxSkipped } from "../offbox/outbox.js";
 
 export async function runSync(_argv: string[]): Promise<number> {
 	const home = resolveHome();
@@ -16,6 +17,7 @@ export async function runSync(_argv: string[]): Promise<number> {
 		let unchanged = 0;
 		let failed = 0;
 		let errors: string[] = [];
+		let offboxError: string | undefined;
 		try {
 			const result = await sweep(config, process.env);
 			archived = result.archived;
@@ -26,8 +28,19 @@ export async function runSync(_argv: string[]): Promise<number> {
 			failed = 1;
 			errors = [`sweep: ${error instanceof Error ? error.message : String(error)}`];
 		}
-		const finishedAt = new Date().toISOString();
 		const ok = failed === 0;
+		if (ok) {
+			try {
+				if (config.offbox.mode === "configured") {
+					await publishOffbox(home, config, config.offbox);
+				} else {
+					await remindOffboxSkipped(home);
+				}
+			} catch (error) {
+				offboxError = error instanceof Error ? error.message : String(error);
+			}
+		}
+		const finishedAt = new Date().toISOString();
 		const summary = `archived ${archived}, unchanged ${unchanged}, failed ${failed}`;
 		await writeRunStamps(home.statePath, {
 			startedAt,
@@ -36,13 +49,20 @@ export async function runSync(_argv: string[]): Promise<number> {
 			archived,
 			unchanged,
 			failed,
+			...(offboxError === undefined ? {} : { offbox: offboxError }),
 		});
 		await appendLog(home.logsPath, summary, new Date(finishedAt));
+		if (offboxError !== undefined) {
+			await appendLog(home.logsPath, `off-box failed: ${offboxError}`, new Date(finishedAt));
+		}
 		for (const error of errors) {
 			process.stderr.write(`blotter sync: ${error}\n`);
 		}
+		if (offboxError !== undefined) {
+			process.stderr.write(`blotter sync: off-box: ${offboxError}\n`);
+		}
 		process.stdout.write(`${summary}\n`);
-		return ok ? 0 : 1;
+		return ok && offboxError === undefined ? 0 : 1;
 	});
 	if (!locked.acquired) {
 		process.stdout.write("sync already running\n");

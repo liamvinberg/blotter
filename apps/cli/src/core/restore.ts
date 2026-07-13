@@ -6,7 +6,7 @@ import type { HarnessId } from "../adapters/adapter.js";
 import { getAdapter } from "../adapters/registry.js";
 import { decompressFile } from "./compress.js";
 import type { BlotterConfig } from "./config.js";
-import { BlotterError } from "./errors.js";
+import { BlotterError, errorMessage } from "./errors.js";
 import { type ArchiveIndexRecord, readIndex } from "./index.js";
 
 interface ArchivedFile {
@@ -34,10 +34,6 @@ export interface RestoreResult {
 interface RestorePlan {
 	file: ArchivedFile;
 	target: string;
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function recordRelPath(record: ArchiveIndexRecord): string {

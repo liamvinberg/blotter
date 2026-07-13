@@ -265,6 +265,35 @@ describe("blotter doctor", () => {
 		});
 	});
 
+	test("reports a configured off-box with a fresh success stamp as healthy", async () => {
+		const layout = await initializedHome();
+		const configPath = join(layout.blotterHome, "config.json");
+		const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+		config.offbox = {
+			mode: "configured",
+			recipient: "age1synthetic",
+			remote: { destination: "/synthetic/remote", rcloneConfig: "default" },
+		};
+		await writeFile(configPath, `${JSON.stringify(config)}\n`);
+		const finishedAt = new Date().toISOString();
+		await writeFile(
+			join(layout.blotterHome, "state", "offbox-last-success.json"),
+			`${JSON.stringify({ finishedAt, uploaded: 2, bytes: 1234 })}\n`,
+		);
+
+		const result = await runCli(["doctor", "--json"], {
+			home: layout.home,
+			env: { BLOTTER_HOME: layout.blotterHome },
+		});
+
+		const report = JSON.parse(result.stdout) as DoctorJson;
+		expect(report.facts.find(({ id }) => id === "offbox")).toMatchObject({
+			status: "ok",
+			detail: expect.stringContaining("last off-box success"),
+			data: { finishedAt },
+		});
+	});
+
 	test("makes unsupported stores visible without treating them as failures", async () => {
 		const layout = await initializedHome();
 		const opencodePath = join(layout.home, ".local", "share", "opencode", "opencode.db");

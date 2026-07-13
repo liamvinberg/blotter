@@ -3,7 +3,7 @@ import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { adapters, unsupportedStores } from "../adapters/registry.js";
-import { type BlotterConfig, loadConfig, saveConfig } from "../core/config.js";
+import { type BlotterConfig, loadConfig, type OffboxConfig, saveConfig } from "../core/config.js";
 import { BlotterError } from "../core/errors.js";
 import { resolveHome } from "../core/home.js";
 import { defaultMachineName } from "../core/machine.js";
@@ -16,7 +16,9 @@ import {
 } from "../schedule/scheduler.js";
 import { runSync } from "./sync.js";
 
-const USAGE = `Usage: blotter init --yes [--archive-root <abs>] [--offbox skip] [--no-activate]
+const USAGE = `Usage: blotter init --yes [--archive-root <abs>] [--offbox skip|remote]
+       [--offbox-remote <rclone-dest>] [--age-recipient <age1…>]
+       [--rclone-config default|managed] [--no-activate]
        blotter init --uninstall
 `;
 
@@ -24,7 +26,10 @@ interface InitOptions {
 	yes: boolean;
 	uninstall: boolean;
 	archiveRoot?: string;
-	offbox: boolean;
+	offbox?: "skip" | "remote";
+	offboxRemote?: string;
+	ageRecipient?: string;
+	rcloneConfig?: "default" | "managed";
 	noActivate: boolean;
 }
 
@@ -34,7 +39,7 @@ function usageError(message: string): null {
 }
 
 function parseOptions(argv: string[]): InitOptions | null {
-	const options: InitOptions = { yes: false, uninstall: false, offbox: false, noActivate: false };
+	const options: InitOptions = { yes: false, uninstall: false, noActivate: false };
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
 		switch (argument) {
@@ -60,14 +65,53 @@ function parseOptions(argv: string[]): InitOptions | null {
 				break;
 			}
 			case "--offbox": {
-				if (options.offbox) {
+				if (options.offbox !== undefined) {
 					return usageError("--offbox may only be passed once");
 				}
 				const value = argv[index + 1];
-				if (value !== "skip") {
-					return usageError("--offbox only accepts skip");
+				if (value !== "skip" && value !== "remote") {
+					return usageError("--offbox only accepts skip or remote");
 				}
-				options.offbox = true;
+				options.offbox = value;
+				index += 1;
+				break;
+			}
+			case "--offbox-remote": {
+				if (options.offboxRemote !== undefined) {
+					return usageError("--offbox-remote may only be passed once");
+				}
+				const value = argv[index + 1];
+				if (value === undefined || value.startsWith("--")) {
+					return usageError("--offbox-remote requires an rclone destination");
+				}
+				options.offboxRemote = value;
+				index += 1;
+				break;
+			}
+			case "--age-recipient": {
+				if (options.ageRecipient !== undefined) {
+					return usageError("--age-recipient may only be passed once");
+				}
+				const value = argv[index + 1];
+				if (value === undefined || value.startsWith("--")) {
+					return usageError("--age-recipient requires an age1… recipient");
+				}
+				if (!/^age1[0-9a-z]+$/u.test(value)) {
+					return usageError("--age-recipient requires an age1… recipient");
+				}
+				options.ageRecipient = value;
+				index += 1;
+				break;
+			}
+			case "--rclone-config": {
+				if (options.rcloneConfig !== undefined) {
+					return usageError("--rclone-config may only be passed once");
+				}
+				const value = argv[index + 1];
+				if (value !== "default" && value !== "managed") {
+					return usageError("--rclone-config only accepts default or managed");
+				}
+				options.rcloneConfig = value;
 				index += 1;
 				break;
 			}
@@ -87,10 +131,50 @@ function parseOptions(argv: string[]): InitOptions | null {
 				return usageError(`unknown option ${argument ?? ""}`);
 		}
 	}
-	if (options.uninstall && (options.yes || options.archiveRoot !== undefined || options.offbox || options.noActivate)) {
+	if (
+		options.uninstall &&
+		(options.yes ||
+			options.archiveRoot !== undefined ||
+			options.offbox !== undefined ||
+			options.offboxRemote !== undefined ||
+			options.ageRecipient !== undefined ||
+			options.rcloneConfig !== undefined ||
+			options.noActivate)
+	) {
 		return usageError("--uninstall cannot be combined with setup options");
 	}
+	if (options.offbox === "remote") {
+		if (options.offboxRemote === undefined) {
+			return usageError("--offbox remote requires --offbox-remote");
+		}
+		if (options.ageRecipient === undefined) {
+			return usageError("--offbox remote requires --age-recipient");
+		}
+	} else if (
+		options.offboxRemote !== undefined ||
+		options.ageRecipient !== undefined ||
+		options.rcloneConfig !== undefined
+	) {
+		return usageError("off-box remote options require --offbox remote");
+	}
 	return options;
+}
+
+function requestedOffbox(options: InitOptions): OffboxConfig | undefined {
+	if (options.offbox === "skip") {
+		return { mode: "skipped", skippedAt: new Date().toISOString() };
+	}
+	if (options.offbox === "remote") {
+		return {
+			mode: "configured",
+			recipient: options.ageRecipient!,
+			remote: {
+				destination: options.offboxRemote!,
+				rcloneConfig: options.rcloneConfig ?? "default",
+			},
+		};
+	}
+	return undefined;
 }
 
 function userHome(): string {
@@ -133,10 +217,14 @@ export async function runInit(argv: string[]): Promise<number> {
 		.filter((entry): entry is { store: (typeof unsupportedStores)[number]; path: string } => entry.path !== null);
 
 	let config: BlotterConfig;
+	const offbox = requestedOffbox(options);
 	if (existsSync(home.configPath)) {
 		config = loadConfig(home);
 		if (options.archiveRoot !== undefined && options.archiveRoot !== config.archiveRoot) {
 			throw new BlotterError(`archive root is already ${config.archiveRoot}; edit config.json to move the archive`);
+		}
+		if (offbox !== undefined) {
+			config = { ...config, offbox };
 		}
 	} else {
 		config = {
@@ -144,7 +232,7 @@ export async function runInit(argv: string[]): Promise<number> {
 			machine: defaultMachineName(),
 			archiveRoot: options.archiveRoot ?? home.defaultArchiveRoot,
 			sweep: { intervalMinutes: 60 },
-			offbox: { mode: "skipped", skippedAt: new Date().toISOString() },
+			offbox: offbox ?? { mode: "skipped", skippedAt: new Date().toISOString() },
 		};
 	}
 	saveConfig(home, config);

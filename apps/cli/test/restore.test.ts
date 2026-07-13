@@ -225,13 +225,13 @@ describe("blotter restore", () => {
 		expect(unknown.code).toBe(1);
 		expect(unknown.stderr).toContain("ffffffff");
 
-		const futureFlag = await runCli(["restore", "--from-remote", first.id], {
+		const missingIdentity = await runCli(["restore", "--from-remote", first.id], {
 			home: layout.home,
 			env: layout.env,
 		});
-		expect(futureFlag.code).toBe(1);
-		expect(futureFlag.stderr).toContain("unknown option --from-remote");
-		expect(futureFlag.stderr).toContain("Usage: blotter restore");
+		expect(missingIdentity.code).toBe(1);
+		expect(missingIdentity.stderr).toContain("--from-remote requires --identity");
+		expect(missingIdentity.stderr).toContain("Usage: blotter restore");
 
 		const shortFlag = await runCli(["restore", "-x"], { home: layout.home, env: layout.env });
 		expect(shortFlag.code).toBe(1);
