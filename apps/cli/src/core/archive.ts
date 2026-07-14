@@ -14,7 +14,7 @@ import { adapters } from "../adapters/registry.js";
 import { compressFile, decompressBytes } from "./compress.js";
 import type { BlotterConfig } from "./config.js";
 import { errorMessage } from "./errors.js";
-import { readDirectoryOrEmpty, statOrNull } from "./fs.js";
+import { isEnoent, readDirectoryOrEmpty, statOrNull } from "./fs.js";
 import {
 	type ArchiveIndexRecord,
 	appendIndex,
@@ -63,7 +63,7 @@ async function storedFile(path: string): Promise<{ mtimeMs: number } | null> {
 		const storedStat = await stat(path);
 		return { mtimeMs: storedStat.mtimeMs };
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+		if (isEnoent(error)) {
 			return null;
 		}
 		throw error;
@@ -112,7 +112,7 @@ async function newestSnapshot(
 		try {
 			value = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")) as unknown;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+			if (isEnoent(error) || error instanceof SyntaxError) {
 				continue;
 			}
 			throw error;

@@ -3,6 +3,7 @@ import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } fro
 import { basename, dirname, join, relative } from "node:path";
 import { type BlotterConfig, type OffboxConfig, type RemoteConfig, remoteStatePath } from "../core/config.js";
 import { BlotterError } from "../core/errors.js";
+import { isEnoent } from "../core/fs.js";
 import type { BlotterHome } from "../core/home.js";
 import { appendLog } from "../core/log.js";
 import { writeAtomicJson } from "../core/stamps.js";
@@ -78,7 +79,7 @@ async function readUploadedRecords(path: string): Promise<Map<string, UploadedRe
 	try {
 		return parseUploadedRecords(await readFile(path, "utf8"));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+		if (isEnoent(error)) {
 			return new Map();
 		}
 		throw error;
@@ -99,7 +100,7 @@ async function readIndexState(path: string): Promise<IndexState | null> {
 		}
 		return null;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+		if (isEnoent(error) || error instanceof SyntaxError) {
 			return null;
 		}
 		throw error;
@@ -111,7 +112,7 @@ async function pathExists(path: string): Promise<boolean> {
 		await stat(path);
 		return true;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+		if (isEnoent(error)) {
 			return false;
 		}
 		throw error;
@@ -277,7 +278,7 @@ export async function remindOffboxSkipped(home: BlotterHome, now: Date = new Dat
 			remindedAtMs = Date.parse(remindedAt);
 		}
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) {
+		if (!isEnoent(error) && !(error instanceof SyntaxError)) {
 			throw error;
 		}
 	}

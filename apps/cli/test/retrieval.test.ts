@@ -361,6 +361,31 @@ describe("blotter retrieval", () => {
 		expect(report.truncated).toBe(true);
 	});
 
+	test("show reads raw archives without the retrieval writer lock", async () => {
+		const test = await layout();
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: [{ type: "user", message: { role: "user", content: "readable while a rebuild runs" } }],
+		});
+		const statePath = join(test.blotterHome, "state");
+		await mkdir(statePath, { recursive: true });
+		// Hold the writer lock with this live test process's pid, as a rebuild would.
+		await writeFile(
+			join(statePath, "retrieval.lock"),
+			`${JSON.stringify({ pid: process.pid, startedAt: "2026-01-02T03:04:05.000Z" })}\n`,
+		);
+
+		const shown = await command(test, ["show", CLAUDE_ID, "--json"]);
+		expect(shown.code, shown.stderr).toBe(0);
+
+		const rebuilt = await command(test, ["search", "--rebuild", "--json"]);
+		expect(rebuilt.code).toBe(1);
+		expect(rebuilt.stderr).toContain("already running");
+	});
+
 	test("excludes db-snapshot archives from retrieval until they have a reader", async () => {
 		const test = await layout();
 		await writeArchivedJsonl({

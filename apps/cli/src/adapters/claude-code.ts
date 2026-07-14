@@ -1,29 +1,10 @@
-import { join, relative } from "node:path";
-import { readDirectoryOrEmpty, statOrNull } from "../core/fs.js";
-import {
-	type FileRole,
-	type SessionFile,
-	type SessionHarnessAdapter,
-	type SessionUnit,
-	UUID_SOURCE,
-} from "./adapter.js";
+import { join } from "node:path";
+import { readDirectoryOrEmpty } from "../core/fs.js";
+import { type SessionFile, type SessionHarnessAdapter, type SessionUnit, UUID_SOURCE } from "./adapter.js";
+import { toSessionFile } from "./session-files.js";
 
 const TRANSCRIPT_PATTERN = new RegExp(`^(${UUID_SOURCE})\\.jsonl$`, "i");
 const SIDECAR_DIRECTORY_PATTERN = new RegExp(`^(${UUID_SOURCE})$`, "i");
-
-async function toSessionFile(storeRoot: string, absPath: string, role: FileRole): Promise<SessionFile | null> {
-	const stats = await statOrNull(absPath);
-	if (stats === null || !stats.isFile()) {
-		return null;
-	}
-	return {
-		absPath,
-		relPath: relative(storeRoot, absPath),
-		role,
-		sizeBytes: stats.size,
-		mtimeMs: stats.mtimeMs,
-	};
-}
 
 async function walkSidecars(storeRoot: string, directory: string): Promise<SessionFile[]> {
 	const files: SessionFile[] = [];

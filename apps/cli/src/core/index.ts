@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type FileRole, HARNESS_IDS, type HarnessId, isHarnessId, type SnapshotSession } from "../adapters/adapter.js";
-import { readDirectoryOrEmpty, statOrNull } from "./fs.js";
+import { isEnoent, readDirectoryOrEmpty, statOrNull } from "./fs.js";
 
 interface ArchiveIndexRecordBase {
 	v: 1;
@@ -145,7 +145,7 @@ export async function readIndex(path: string): Promise<IndexContents> {
 	try {
 		return parseIndex(await readFile(path, "utf8"));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+		if (isEnoent(error)) {
 			return { records: new Map(), corruptLines: 0 };
 		}
 		throw error;
@@ -162,7 +162,7 @@ async function readSnapshotIndexRecords(machineRoot: string, machine: string): P
 			try {
 				value = JSON.parse(await readFile(join(snapshotRoot, directory.name, "manifest.json"), "utf8")) as unknown;
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+				if (isEnoent(error) || error instanceof SyntaxError) {
 					continue;
 				}
 				throw error;

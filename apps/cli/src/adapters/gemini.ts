@@ -1,13 +1,8 @@
 import { open } from "node:fs/promises";
-import { extname, join, relative } from "node:path";
-import { readDirectoryOrEmpty, statOrNull } from "../core/fs.js";
-import {
-	type FileRole,
-	type SessionFile,
-	type SessionHarnessAdapter,
-	type SessionUnit,
-	UUID_SOURCE,
-} from "./adapter.js";
+import { extname, join } from "node:path";
+import { isEnoent, readDirectoryOrEmpty } from "../core/fs.js";
+import { type SessionFile, type SessionHarnessAdapter, type SessionUnit, UUID_SOURCE } from "./adapter.js";
+import { toSessionFile } from "./session-files.js";
 
 const MAX_METADATA_BYTES = 64 * 1024;
 const SESSION_PATTERN = /^session-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-([0-9a-f]{8})\.jsonl?$/i;
@@ -36,7 +31,7 @@ async function readMetadataPrefix(path: string): Promise<{ text: string; complet
 			complete: bytesRead <= MAX_METADATA_BYTES,
 		};
 	} catch (error) {
-		if (isRecord(error) && error.code === "ENOENT") {
+		if (isEnoent(error)) {
 			return null;
 		}
 		throw error;
@@ -58,20 +53,6 @@ function sessionIdFromMetadata(path: string, metadata: { text: string; complete:
 		}
 		return LEGACY_ID_PREFIX_PATTERN.exec(metadata.text)?.[1] ?? null;
 	}
-}
-
-async function toSessionFile(storeRoot: string, absPath: string, role: FileRole): Promise<SessionFile | null> {
-	const stats = await statOrNull(absPath);
-	if (stats === null || !stats.isFile()) {
-		return null;
-	}
-	return {
-		absPath,
-		relPath: relative(storeRoot, absPath),
-		role,
-		sizeBytes: stats.size,
-		mtimeMs: stats.mtimeMs,
-	};
 }
 
 async function enumerateProject(storeRoot: string, projectDirectory: string): Promise<SessionUnit[]> {
@@ -100,10 +81,20 @@ async function enumerateProject(storeRoot: string, projectDirectory: string): Pr
 			continue;
 		}
 		const existing = units.get(id);
-		if (existing !== undefined && extname(existing.files[0]!.absPath) === ".jsonl") {
+		if (existing === undefined) {
+			units.set(id, { id, files: marker === null ? [main] : [main, marker] });
 			continue;
 		}
-		units.set(id, { id, files: marker === null ? [main] : [main, marker] });
+		const existingIsJsonl = extname(existing.files[0]!.absPath) === ".jsonl";
+		if (existingIsJsonl === (extname(absPath) === ".jsonl")) {
+			continue;
+		}
+		// The converted JSONL is Gemini's appendable resume target, so it is the
+		// unit's main file; the legacy JSON's bytes still exist in the live store,
+		// so they ride along as a sidecar rather than silently leaving the archive.
+		const [jsonlFile, legacyFile] = existingIsJsonl ? [existing.files[0]!, main] : [main, existing.files[0]!];
+		const legacySidecar: SessionFile = { ...legacyFile, role: "sidecar" };
+		units.set(id, { id, files: marker === null ? [jsonlFile, legacySidecar] : [jsonlFile, legacySidecar, marker] });
 	}
 	return [...units.values()].sort((left, right) => left.files[0]!.relPath.localeCompare(right.files[0]!.relPath));
 }

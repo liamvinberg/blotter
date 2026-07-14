@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { HarnessId } from "../adapters/adapter.js";
 import type { BlotterConfig } from "../core/config.js";
 import { BlotterError } from "../core/errors.js";
+import { isEnoent } from "../core/fs.js";
 import type { BlotterHome } from "../core/home.js";
 import { getReader } from "../readers/registry.js";
 import { readArchiveCatalog } from "./catalog.js";
@@ -217,7 +218,7 @@ async function openCurrent(path: string): Promise<DatabaseSync | null> {
 	try {
 		await stat(path);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+		if (isEnoent(error)) {
 			return null;
 		}
 		throw error;

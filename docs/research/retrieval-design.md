@@ -188,7 +188,7 @@ The rebuild command is:
 blotter search --rebuild [--json]
 ```
 
-It writes a temporary database beside the target, closes and checkpoints it, then atomically renames it over the old cache. Failure leaves the previous cache intact. `search` and `show` use a retrieval-specific writer lock under `$BLOTTER_HOME/state`; concurrent readers may continue on the last complete database.
+It writes a temporary database beside the target, closes and checkpoints it, then atomically renames it over the old cache. Failure leaves the previous cache intact. `search` refreshes and rebuilds under a retrieval-specific writer lock in `$BLOTTER_HOME/state`; `show` reads raw archives, never the cache, and takes no lock; concurrent readers continue on the last complete database. *(Amended 2026-07-14 during code review: the original sentence had `show` sharing the writer lock, which made `show` fail during a rebuild it does not depend on.)*
 
 `show` does not trust cached text. After resolving the unit from archive metadata/tree state, it decompresses and parses that unit's current raw files and renders the result. That makes show the direct inspection lane and a useful check on search-index drift.
 

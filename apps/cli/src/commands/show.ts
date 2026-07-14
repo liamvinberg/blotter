@@ -1,6 +1,5 @@
 import { loadConfig } from "../core/config.js";
 import { resolveHome } from "../core/home.js";
-import { withRetrievalLock } from "../core/lock.js";
 import { readArchiveCatalog } from "../retrieval/catalog.js";
 import { assertFts5 } from "../retrieval/database.js";
 import { readShowUnit, resolveShowUnit, type ShowResult } from "../retrieval/show.js";
@@ -60,17 +59,10 @@ export async function runShow(argv: string[]): Promise<number> {
 	assertFts5();
 	const home = resolveHome();
 	const config = loadConfig(home);
-	const locked = await withRetrievalLock(home.statePath, async () => {
-		const unit = resolveShowUnit(await readArchiveCatalog(config), options.value);
-		const result = await readShowUnit(unit);
-		if (options.json) process.stdout.write(`${JSON.stringify(result)}\n`);
-		else printShow(result);
-		return 0;
-	});
-	if (!locked.acquired) {
-		// DRAFT copy
-		process.stderr.write("blotter show: retrieval is already running\n");
-		return 1;
-	}
-	return locked.value;
+	// show reads raw archives, never the cache, so it takes no retrieval lock.
+	const unit = resolveShowUnit(await readArchiveCatalog(config), options.value);
+	const result = await readShowUnit(unit);
+	if (options.json) process.stdout.write(`${JSON.stringify(result)}\n`);
+	else printShow(result);
+	return 0;
 }

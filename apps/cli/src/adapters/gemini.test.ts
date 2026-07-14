@@ -48,7 +48,7 @@ describe("geminiAdapter", () => {
 		expect(units[0]?.files.every((file) => file.sizeBytes > 0 && file.mtimeMs > 0)).toBe(true);
 	});
 
-	test("enumerates legacy JSON and prefers a converted JSONL sibling for the same full UUID", async () => {
+	test("keeps the legacy JSON as a sidecar beside a converted JSONL sibling", async () => {
 		const root = await makeRoot();
 		const id = "55555555-5555-4555-8555-555555555555";
 		const legacy = await makeGeminiStore(root, {
@@ -75,9 +75,11 @@ describe("geminiAdapter", () => {
 		expect(units[0]?.id).toBe(id);
 		expect(units[0]?.files.map((file) => file.relPath)).toEqual([
 			converted.files[0]!.relPath,
+			legacy.files[0]!.relPath,
 			converted.files[1]!.relPath,
 		]);
-		expect(units[0]?.files.map((file) => file.relPath)).not.toContain(legacy.files[0]!.relPath);
+		expect(units[0]?.files.find((file) => file.relPath === legacy.files[0]!.relPath)?.role).toBe("sidecar");
+		expect(units[0]?.files[0]?.role).toBe("main");
 	});
 
 	test("skips malformed, overlong, mismatched, and subagent metadata without failing the store", async () => {

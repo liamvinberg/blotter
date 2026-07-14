@@ -33,6 +33,23 @@ pnpm workspace: `apps/cli` (the tool). Node ≥ 22.15, TypeScript maximal strict
   paths unless explicitly requested.
 - No new dependencies without flagging it loudly.
 
+## Agent workflows
+
+### Issue tracker
+
+GitHub Issues on this repo; external PRs are not a triage surface. Planning runs wayfinder-style
+(map + sub-issue tickets, native dependencies). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`).
+See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root, created lazily. See
+`docs/agents/domain.md`.
+
 ## Gates
 
 ```
