@@ -62,9 +62,9 @@ async function tryAcquire(path: string): Promise<boolean> {
 	return true;
 }
 
-export async function withSyncLock<T>(statePath: string, fn: () => Promise<T>): Promise<SyncLockResult<T>> {
+async function withLock<T>(statePath: string, name: string, fn: () => Promise<T>): Promise<SyncLockResult<T>> {
 	await mkdir(statePath, { recursive: true });
-	const path = join(statePath, "sync.lock");
+	const path = join(statePath, `${name}.lock`);
 	let acquired = await tryAcquire(path);
 	if (!acquired) {
 		if (await lockOwnerIsAlive(path)) {
@@ -81,4 +81,12 @@ export async function withSyncLock<T>(statePath: string, fn: () => Promise<T>): 
 	} finally {
 		await rm(path, { force: true });
 	}
+}
+
+export async function withSyncLock<T>(statePath: string, fn: () => Promise<T>): Promise<SyncLockResult<T>> {
+	return await withLock(statePath, "sync", fn);
+}
+
+export async function withRetrievalLock<T>(statePath: string, fn: () => Promise<T>): Promise<SyncLockResult<T>> {
+	return await withLock(statePath, "retrieval", fn);
 }

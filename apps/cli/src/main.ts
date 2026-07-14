@@ -2,10 +2,13 @@ import { readFileSync } from "node:fs";
 import { runDoctor } from "./commands/doctor.js";
 import { runInit } from "./commands/init.js";
 import { runRestore } from "./commands/restore.js";
+import { runSearch } from "./commands/search.js";
+import { runShow } from "./commands/show.js";
 import { runStatus } from "./commands/status.js";
 import { runSync } from "./commands/sync.js";
 import { BlotterError } from "./core/errors.js";
 
+// DRAFT copy. The command block is pinned byte-for-byte by the retrieval contract.
 const HELP = `blotter — every agent session, kept.
 
 Usage: blotter <command> [options]
@@ -16,6 +19,8 @@ Commands:
   doctor    prove the schedule is alive and nothing is being missed
   restore   put an archived session back where its harness resumes it
   status    one-screen health summary
+  search    find text across archived sessions
+  show      read one archived session
 
 Options:
   -h, --help     show this help
@@ -30,6 +35,8 @@ const commands: Record<string, (argv: string[]) => Promise<number>> = {
 	doctor: runDoctor,
 	restore: runRestore,
 	status: runStatus,
+	search: runSearch,
+	show: runShow,
 };
 
 function version(): string {

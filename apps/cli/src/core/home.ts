@@ -10,6 +10,7 @@ export interface BlotterHome {
 	configPath: string;
 	statePath: string;
 	logsPath: string;
+	cachePath: string;
 	/** Default archive root; config.archiveRoot may point elsewhere. */
 	defaultArchiveRoot: string;
 	/** Blotter-owned rclone config (offbox "managed" mode). */
@@ -24,6 +25,7 @@ export function resolveHome(env: NodeJS.ProcessEnv = process.env): BlotterHome {
 		configPath: join(root, "config.json"),
 		statePath: join(root, "state"),
 		logsPath: join(root, "logs"),
+		cachePath: join(root, "cache"),
 		defaultArchiveRoot: join(root, "archive"),
 		rcloneConfPath: join(root, "rclone.conf"),
 	};

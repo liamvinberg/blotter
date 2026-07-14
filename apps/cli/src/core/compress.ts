@@ -13,7 +13,8 @@ export interface CompressionResult {
 
 export function assertZstdSupport(): void {
 	if (typeof zlib.zstdCompressSync !== "function" || typeof zlib.zstdDecompressSync !== "function") {
-		throw new BlotterError("zstd compression requires Node >= 22.15");
+		// DRAFT copy
+		throw new BlotterError("zstd compression requires Node >= 22.16");
 	}
 }
 
