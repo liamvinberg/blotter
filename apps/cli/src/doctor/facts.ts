@@ -411,7 +411,11 @@ function parseLaunchdExitStatus(output: string): number | null {
 	return Number.isNaN(value) ? null : value;
 }
 
-async function checkLaunchdLive(context: DoctorContext): Promise<Fact> {
+function parseLaunchdArtifactPath(output: string): string | null {
+	return /^\s*path\s*=\s*(.+?)\s*$/im.exec(output)?.[1] ?? null;
+}
+
+async function checkLaunchdLive(context: DoctorContext, schedule: InstalledSchedule): Promise<Fact> {
 	if (process.getuid === undefined) {
 		return fact("live", "problem", "launchd user domain is unavailable");
 	}
@@ -419,6 +423,14 @@ async function checkLaunchdLive(context: DoctorContext): Promise<Fact> {
 	const result = await command("launchctl", ["print", target], context.env);
 	if (!result.ok) {
 		return fact("live", "problem", `launchd job is not loaded (${target})`);
+	}
+	const expectedPath = schedule.artifactPaths[0] ?? "";
+	const loadedPath = parseLaunchdArtifactPath(result.stdout);
+	if (loadedPath !== null && loadedPath !== expectedPath) {
+		return fact("live", "problem", `launchd job is loaded from ${loadedPath}; expected ${expectedPath}`, {
+			loadedPath,
+			expectedPath,
+		});
 	}
 	const exitStatus = parseLaunchdExitStatus(result.stdout);
 	if (exitStatus === null) {
@@ -483,7 +495,7 @@ export async function checkLive(
 	}
 	switch (installed.schedule.kind) {
 		case "launchd":
-			return await checkLaunchdLive(context);
+			return await checkLaunchdLive(context, installed.schedule);
 		case "systemd":
 			return await checkSystemdLive(context);
 		case "cron":

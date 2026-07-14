@@ -45,7 +45,7 @@ describe("blotter init", () => {
 		expect(result.stdout).toContain(`archive: ${archiveRoot}`);
 		expect(result.stdout).toContain("archived 5, unchanged 0, failed 0");
 		expect(result.stdout).toContain("installed: launchd schedule matches");
-		expect(result.stdout).toContain("live: launchd job is not loaded");
+		expect(result.stdout).toMatch(/live: (?:launchd job is not loaded|launchd job is loaded from .+; expected .+)/);
 		expect(result.stdout).toContain("problems:");
 
 		const config = JSON.parse(await readFile(join(blotterHome, "config.json"), "utf8")) as Record<string, unknown>;
