@@ -9,8 +9,11 @@ archives in a store the user owns. Spec: issue #14. Canonical constraints: `docs
   Never normalize, never redact at rest — a restored file must resume in its harness.
 - **Append-only.** Nothing in the archive is ever mutated or deleted; re-archiving only
   happens when the source is newer.
-- **Local-first, own-your-store.** Off-box copies are encrypted before leaving the machine
-  with a key only the user holds. No hosted service, no account, no telemetry.
+- **Local-first, no required account.** User-owned storage remains the default off-box lane.
+  Every off-box copy is encrypted before leaving the machine with a key only the user holds.
+  Optional Packbat Cloud stores ciphertext only and decrypts client-side; the key never
+  reaches Packbat, plaintext hosting and key escrow are permanently out of scope, and there
+  is no telemetry (ADR 0001).
 - **Turnkey.** One wizard, then zero required interaction. `doctor` proves nothing is missed.
 
 ## Layout
