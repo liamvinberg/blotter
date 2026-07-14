@@ -40,21 +40,6 @@ describe("piAdapter", () => {
 		expect(units[0]?.files[0]?.sizeBytes).toBeGreaterThan(0);
 	});
 
-	test("enumerates a session directly inside an explicit session-dir override", async () => {
-		const root = await makeRoot();
-		const fixture = await makePiStore(root, {
-			id: "44444444-4444-4444-8444-444444444444",
-			encodedCwd: ".",
-			timestamp: "2026-02-03T04-05-06-007Z",
-		});
-
-		const units = await piAdapter.enumerate(root);
-
-		expect(units).toHaveLength(1);
-		expect(units[0]?.id).toBe(fixture.id);
-		expect(units[0]?.files[0]?.relPath).toBe(`2026-02-03T04-05-06-007Z_${fixture.id}.jsonl`);
-	});
-
 	test("builds a versioned session header carrying the filename id", async () => {
 		const root = await makeRoot();
 		const fixture = await makePiStore(root, { id: "22222222-2222-4222-8222-222222222222" });

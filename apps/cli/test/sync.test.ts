@@ -140,6 +140,24 @@ describe("blotter sync", () => {
 		}
 	});
 
+	test("archives pi sessions directly inside an explicit session directory", async () => {
+		const layout = await makeLayout();
+		await writeConfig(layout);
+		const pi = await makePiStore(layout.piRoot, {
+			encodedCwd: ".",
+			mtimeMs: SOURCE_MTIME_MS,
+		});
+
+		const result = await runCli(["sync"], { home: layout.home, env: layout.env });
+
+		expect(result.code).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toContain("archived 1");
+		expect(zstdDecompressSync(await readFile(storedPath(layout, "pi", pi.files[0]!)))).toEqual(
+			await readFile(pi.files[0]!.absPath),
+		);
+	});
+
 	test("rebuilds a missing index from committed payloads without touching them", async () => {
 		const layout = await makeLayout();
 		await writeConfig(layout);
