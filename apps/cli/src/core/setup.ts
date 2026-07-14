@@ -12,7 +12,7 @@ import {
 	type ScheduleInstallResult,
 	scheduleWasActivated,
 } from "../schedule/scheduler.js";
-import { type BlotterConfig, loadConfig, type OffboxConfig, saveConfig } from "./config.js";
+import { type BlotterConfig, CONFIG_VERSION, loadConfig, type OffboxConfig, saveConfig } from "./config.js";
 import { BlotterError } from "./errors.js";
 import type { BlotterHome } from "./home.js";
 import { defaultMachineName } from "./machine.js";
@@ -66,7 +66,7 @@ export async function writeInitConfig(
 		}
 	} else {
 		config = {
-			version: 1,
+			version: CONFIG_VERSION,
 			machine: defaultMachineName(),
 			archiveRoot,
 			sweep: { intervalMinutes: 60 },

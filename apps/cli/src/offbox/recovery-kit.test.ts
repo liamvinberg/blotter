@@ -6,19 +6,21 @@ describe("recovery kit", () => {
 		const kit = renderRecoveryKit({
 			identity: "AGE-SECRET-KEY-1SYNTHETICIDENTITY",
 			recipient: "age1syntheticrecipient12345678",
-			remote: {
-				type: "s3-compatible",
-				destination: "backup:blotter/archive",
-				endpoint: "https://objects.example.com",
-				bucket: "blotter",
-				prefix: "archive",
-			},
+			remotes: [
+				{
+					type: "s3-compatible",
+					destination: "backup:blotter/archive",
+					endpoint: "https://objects.example.com",
+					bucket: "blotter",
+					prefix: "archive",
+				},
+			],
 			createdAt: "2026-07-13T10:11:12.000Z",
 		});
 
 		expect(kit).toBe(`blotter recovery kit
 blotter version: 0.1.0
-format: 1
+format: 2
 created: 2026-07-13T10:11:12.000Z
 
 Age identity
@@ -46,6 +48,22 @@ age -d -i <kit-file> -o <archive-file> <archive-file>.age
 
 If every copy of this identity is lost, nobody can recover this archive.
 `);
+	});
+
+	test("lists every remote and an explicit restore command for additional remotes", () => {
+		const kit = renderRecoveryKit({
+			identity: "AGE-SECRET-KEY-1SYNTHETICIDENTITY",
+			recipient: "age1syntheticrecipient12345678",
+			remotes: [
+				{ type: "rclone", destination: "first:archive" },
+				{ type: "rclone", destination: "second:archive" },
+			],
+			createdAt: "2026-07-13T10:11:12.000Z",
+		});
+
+		expect(kit).toContain("Remote 1\ntype: rclone\ndestination: first:archive");
+		expect(kit).toContain("Remote 2\ntype: rclone\ndestination: second:archive");
+		expect(kit).toContain("--remote second:archive");
 	});
 
 	test("uses the last eight recipient characters as the custody challenge", () => {

@@ -50,7 +50,7 @@ describe("blotter init", () => {
 
 		const config = JSON.parse(await readFile(join(blotterHome, "config.json"), "utf8")) as Record<string, unknown>;
 		expect(config).toEqual({
-			version: 1,
+			version: 2,
 			machine: (hostname().split(".", 1)[0] ?? "").toLowerCase(),
 			archiveRoot,
 			sweep: { intervalMinutes: 60 },

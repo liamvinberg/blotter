@@ -1,13 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
-import type { BlotterConfig, OffboxConfig } from "../core/config.js";
+import { type BlotterConfig, type OffboxConfig, type RemoteConfig, remoteStatePath } from "../core/config.js";
 import { BlotterError } from "../core/errors.js";
 import type { BlotterHome } from "../core/home.js";
 import { appendLog } from "../core/log.js";
 import { writeAtomicJson } from "../core/stamps.js";
 import { encryptToRecipient } from "./age.js";
-import { copyFile, copyTree, joinRcloneDestination, remoteFileExists } from "./rclone.js";
+import { createArchiveRemote } from "./remote.js";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const REMINDER = "If this laptop dies, sessions not copied off-box die with it.";
@@ -29,6 +29,16 @@ interface ArchiveFile {
 	absolutePath: string;
 	mtimeMs: number;
 }
+
+interface IndexState {
+	v: 1;
+	hash: string;
+	recipient: string;
+}
+
+export type RemotePublishOutcome =
+	| { destination: string; ok: true; finishedAt: string; uploaded: number; bytes: number; indexUploaded: boolean }
+	| { destination: string; ok: false; error: string };
 
 function isUploadedRecord(value: unknown): value is UploadedRecord {
 	if (typeof value !== "object" || value === null) {
@@ -75,6 +85,39 @@ async function readUploadedRecords(path: string): Promise<Map<string, UploadedRe
 	}
 }
 
+async function readIndexState(path: string): Promise<IndexState | null> {
+	try {
+		const value: unknown = JSON.parse(await readFile(path, "utf8"));
+		if (
+			typeof value === "object" &&
+			value !== null &&
+			(value as Record<string, unknown>).v === 1 &&
+			typeof (value as Record<string, unknown>).hash === "string" &&
+			typeof (value as Record<string, unknown>).recipient === "string"
+		) {
+			return value as IndexState;
+		}
+		return null;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await stat(path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+}
+
 async function walkArchiveFiles(machinePath: string, machine: string): Promise<ArchiveFile[]> {
 	const files: ArchiveFile[] = [];
 	async function walk(path: string): Promise<void> {
@@ -112,16 +155,27 @@ async function encryptFile(source: string, destination: string, recipient: strin
 	}
 }
 
-export async function publishOffbox(home: BlotterHome, config: BlotterConfig, offbox: ConfiguredOffbox): Promise<void> {
+async function publishRemote(
+	home: BlotterHome,
+	config: BlotterConfig,
+	offbox: ConfiguredOffbox,
+	remoteConfig: RemoteConfig,
+): Promise<RemotePublishOutcome> {
 	const machinePath = join(config.archiveRoot, config.machine);
 	const indexPath = join(machinePath, "index.jsonl");
 	await mkdir(machinePath, { recursive: true });
 	await writeFile(indexPath, "", { flag: "a" });
 
-	const uploadedPath = join(home.statePath, "offbox-uploaded.jsonl");
+	const statePath = remoteStatePath(home, remoteConfig);
+	const uploadedPath = join(statePath, "uploaded.jsonl");
+	const successPath = join(statePath, "last-success.json");
+	const indexStatePath = join(statePath, "index.json");
 	const uploaded = await readUploadedRecords(uploadedPath);
-	const remoteIndexPath = joinRcloneDestination(offbox.remote.destination, `${config.machine}/index.jsonl.age`);
-	if (uploaded.size === 0 && (await remoteFileExists(remoteIndexPath, offbox.remote.rcloneConfig))) {
+	const previousIndex = await readIndexState(indexStatePath);
+	const remote = createArchiveRemote(remoteConfig);
+	const hasPublished = uploaded.size > 0 || previousIndex !== null || (await pathExists(successPath));
+	if (!hasPublished && (await remote.indexExists(config.machine))) {
+		// DRAFT copy
 		throw new BlotterError(
 			`an archive for machine \`${config.machine}\` already exists at the remote; restore it first (\`blotter restore --from-remote --identity <kit-file>\`) or change \`machine\` in config.json.`,
 		);
@@ -132,12 +186,12 @@ export async function publishOffbox(home: BlotterHome, config: BlotterConfig, of
 		return (
 			previous === undefined ||
 			previous.recipient !== offbox.recipient ||
-			previous.destination !== offbox.remote.destination ||
-			previous.rcloneConfig !== offbox.remote.rcloneConfig ||
+			previous.destination !== remoteConfig.destination ||
+			previous.rcloneConfig !== remoteConfig.rcloneConfig ||
 			file.mtimeMs > previous.mtimeMs
 		);
 	});
-	const outboxPath = join(home.statePath, "outbox");
+	const outboxPath = join(statePath, "outbox");
 	await rm(outboxPath, { recursive: true, force: true });
 
 	let bytes = 0;
@@ -145,16 +199,21 @@ export async function publishOffbox(home: BlotterHome, config: BlotterConfig, of
 		bytes += await encryptFile(file.absolutePath, join(outboxPath, `${file.path}.age`), offbox.recipient);
 	}
 	if (changed.length > 0) {
-		await copyTree(outboxPath, offbox.remote.destination, offbox.remote.rcloneConfig);
+		await remote.putArchiveObjects(outboxPath);
 	}
 
+	const indexContents = await readFile(indexPath);
+	const indexHash = createHash("sha256").update(indexContents).digest("hex");
+	const indexChanged = previousIndex?.hash !== indexHash || previousIndex.recipient !== offbox.recipient;
 	const encryptedIndexPath = join(outboxPath, config.machine, "index.jsonl.age");
-	await encryptFile(indexPath, encryptedIndexPath, offbox.recipient);
-	await copyFile(encryptedIndexPath, remoteIndexPath, offbox.remote.rcloneConfig);
+	if (indexChanged) {
+		await encryptFile(indexPath, encryptedIndexPath, offbox.recipient);
+		await remote.putIndex(config.machine, encryptedIndexPath);
+	}
 
 	const finishedAt = new Date().toISOString();
 	if (changed.length > 0) {
-		await mkdir(home.statePath, { recursive: true });
+		await mkdir(statePath, { recursive: true });
 		await appendFile(
 			uploadedPath,
 			`${changed
@@ -165,16 +224,46 @@ export async function publishOffbox(home: BlotterHome, config: BlotterConfig, of
 						mtimeMs: file.mtimeMs,
 						uploadedAt: finishedAt,
 						recipient: offbox.recipient,
-						destination: offbox.remote.destination,
-						rcloneConfig: offbox.remote.rcloneConfig,
+						destination: remoteConfig.destination,
+						rcloneConfig: remoteConfig.rcloneConfig,
 					}),
 				)
 				.join("\n")}\n`,
 		);
 	}
+	if (indexChanged) {
+		await writeAtomicJson(indexStatePath, { v: 1, hash: indexHash, recipient: offbox.recipient });
+	}
 	await rm(outboxPath, { recursive: true, force: true });
-	const result = { finishedAt, uploaded: changed.length, bytes };
-	await writeAtomicJson(join(home.statePath, "offbox-last-success.json"), result);
+	const result = {
+		destination: remote.destination,
+		finishedAt,
+		uploaded: changed.length,
+		bytes,
+		indexUploaded: indexChanged,
+	};
+	await writeAtomicJson(successPath, result);
+	return { ok: true, ...result };
+}
+
+export async function publishOffbox(
+	home: BlotterHome,
+	config: BlotterConfig,
+	offbox: ConfiguredOffbox,
+): Promise<RemotePublishOutcome[]> {
+	const outcomes: RemotePublishOutcome[] = [];
+	for (const remote of offbox.remotes) {
+		try {
+			outcomes.push(await publishRemote(home, config, offbox, remote));
+		} catch (error) {
+			outcomes.push({
+				destination: remote.destination,
+				ok: false,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return outcomes;
 }
 
 export async function remindOffboxSkipped(home: BlotterHome, now: Date = new Date()): Promise<void> {

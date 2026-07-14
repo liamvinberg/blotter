@@ -1,6 +1,8 @@
 import packageMetadata from "../../package.json" with { type: "json" };
 import { writePrivateFile } from "../core/private-file.js";
 
+const RECOVERY_KIT_FORMAT = 2;
+
 export type RecoveryKitRemote =
 	| { type: "s3-compatible"; destination: string; endpoint: string; bucket: string; prefix?: string }
 	| { type: "sftp"; destination: string; host: string; port?: number; path: string }
@@ -9,7 +11,7 @@ export type RecoveryKitRemote =
 export interface RecoveryKitInput {
 	identity: string;
 	recipient: string;
-	remote: RecoveryKitRemote;
+	remotes: [RecoveryKitRemote, ...RecoveryKitRemote[]];
 	createdAt: string;
 }
 
@@ -37,9 +39,22 @@ function renderRemote(remote: RecoveryKitRemote): string {
 }
 
 export function renderRecoveryKit(input: RecoveryKitInput): string {
+	// DRAFT copy
+	const remoteSections = input.remotes
+		.map((remote, index) => `${input.remotes.length === 1 ? "Remote" : `Remote ${index + 1}`}\n${renderRemote(remote)}`)
+		.join("\n\n");
+	const firstRemote = input.remotes[0];
+	const additionalSetup = input.remotes.length === 1 ? "" : "\nAdd the other remote destinations to config.json.\n"; // DRAFT copy
+	// DRAFT copy
+	const restoreCommands = input.remotes
+		.map(
+			(remote, index) =>
+				`blotter restore --from-remote --identity <kit-file>${index === 0 ? "" : ` --remote ${remote.destination}`} <unit> --machine <source-machine>`,
+		)
+		.join("\n");
 	return `blotter recovery kit
 blotter version: ${packageMetadata.version}
-format: 1
+format: ${RECOVERY_KIT_FORMAT}
 created: ${input.createdAt}
 
 Age identity
@@ -48,15 +63,14 @@ ${input.identity}
 Age recipient
 ${input.recipient}
 
-Remote
-${renderRemote(input.remote)}
+${remoteSections}
 
 Fresh-machine setup
-Configure rclone access to ${input.remote.destination}, then run:
-blotter init --yes --offbox remote --offbox-remote ${input.remote.destination} --age-recipient ${input.recipient} --rclone-config default
-
+Configure rclone access to ${input.remotes.map((remote) => remote.destination).join(", ")}, then run:
+blotter init --yes --offbox remote --offbox-remote ${firstRemote.destination} --age-recipient ${input.recipient} --rclone-config default
+${additionalSetup}
 Fresh-machine restore
-blotter restore --from-remote --identity <kit-file> <unit> --machine <source-machine>
+${restoreCommands}
 
 Raw age fallback
 age -d -i <kit-file> -o <archive-file> <archive-file>.age

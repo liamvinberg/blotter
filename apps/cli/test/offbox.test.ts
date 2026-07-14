@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -64,11 +65,103 @@ async function matchingLineCount(path: string, text: string): Promise<number> {
 	return (await readFile(path, "utf8")).split("\n").filter((line) => line.includes(text)).length;
 }
 
+function remoteStateDirectory(blotterHome: string, destination: string): string {
+	const id = createHash("sha256").update(`rclone\0${destination}`).digest("hex");
+	return join(blotterHome, "state", "offbox", id);
+}
+
+async function writeConfiguredConfig(layout: Layout, recipient: string, destinations: string[]): Promise<void> {
+	await mkdir(layout.blotterHome, { recursive: true });
+	await writeFile(
+		join(layout.blotterHome, "config.json"),
+		`${JSON.stringify({
+			version: 2,
+			machine: "test-machine",
+			archiveRoot: layout.archiveRoot,
+			sweep: { intervalMinutes: 60 },
+			offbox: {
+				mode: "configured",
+				recipient,
+				remotes: destinations.map((destination) => ({ type: "rclone", destination, rcloneConfig: "default" })),
+			},
+		})}\n`,
+	);
+}
+
 afterEach(async () => {
 	await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
 describe("off-box configuration", () => {
+	test("rejects a configured v2 off-box without a remote", async () => {
+		const layout = await makeLayout();
+		await mkdir(layout.blotterHome, { recursive: true });
+		await writeFile(
+			join(layout.blotterHome, "config.json"),
+			`${JSON.stringify({
+				version: 2,
+				machine: "test-machine",
+				archiveRoot: layout.archiveRoot,
+				sweep: { intervalMinutes: 60 },
+				offbox: { mode: "configured", recipient: "age1synthetic", remotes: [] },
+			})}\n`,
+		);
+
+		const result = await runCli(["restore"], { home: layout.home, env: layout.env });
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("config.json is invalid");
+		expect(result.stderr).toContain("offbox.remotes[0]");
+	});
+
+	test("migrates a v1 configured remote and its publish state to v2 once", async () => {
+		const layout = await makeLayout();
+		await Promise.all([
+			mkdir(join(layout.archiveRoot, "legacy-machine"), { recursive: true }),
+			mkdir(join(layout.blotterHome, "state"), { recursive: true }),
+		]);
+		await writeFile(join(layout.archiveRoot, "legacy-machine", "index.jsonl"), "");
+		await writeFile(
+			join(layout.blotterHome, "config.json"),
+			`${JSON.stringify({
+				version: 1,
+				machine: "legacy-machine",
+				archiveRoot: layout.archiveRoot,
+				sweep: { intervalMinutes: 60 },
+				offbox: {
+					mode: "configured",
+					recipient: "age1synthetic",
+					remote: { destination: "blotter:bucket/prefix", rcloneConfig: "managed" },
+				},
+			})}\n`,
+		);
+		await writeFile(join(layout.blotterHome, "state", "offbox-uploaded.jsonl"), "synthetic legacy state\n");
+		await writeFile(
+			join(layout.blotterHome, "state", "offbox-last-success.json"),
+			`${JSON.stringify({ finishedAt: "2026-07-13T10:11:12.000Z", uploaded: 1, bytes: 123 })}\n`,
+		);
+
+		const result = await runCli(["restore"], { home: layout.home, env: layout.env });
+
+		expect(result.code).toBe(0);
+		const config = JSON.parse(await readFile(join(layout.blotterHome, "config.json"), "utf8")) as Record<
+			string,
+			unknown
+		>;
+		expect(config).toMatchObject({
+			version: 2,
+			offbox: {
+				mode: "configured",
+				remotes: [{ type: "rclone", destination: "blotter:bucket/prefix", rcloneConfig: "managed" }],
+			},
+		});
+		const stateFiles = await listFiles(join(layout.blotterHome, "state"));
+		expect(stateFiles).not.toContain("offbox-uploaded.jsonl");
+		expect(stateFiles).not.toContain("offbox-last-success.json");
+		expect(stateFiles.filter((path) => path.endsWith("/uploaded.jsonl"))).toHaveLength(1);
+		expect(stateFiles.filter((path) => path.endsWith("/last-success.json"))).toHaveLength(1);
+	});
+
 	test("requires both remote flags for non-interactive setup", async () => {
 		const layout = await makeLayout();
 		const missingRecipient = await runCli(
@@ -124,7 +217,7 @@ describe("off-box configuration", () => {
 			expect(stamp).toMatchObject({ ok: true, archived: 1, offbox: expect.stringContaining("rclone") });
 			expect(JSON.parse(await readFile(join(layout.home, "state", "last-success.json"), "utf8"))).toEqual(stamp);
 			expect(await readFile(join(layout.home, "logs", "blotter.log"), "utf8")).toContain("off-box failed");
-			expect((await listFiles(join(layout.home, "state", "outbox"))).some((path) => path.endsWith(".age"))).toBe(true);
+			expect((await listFiles(join(layout.home, "state"))).some((path) => path.endsWith(".age"))).toBe(true);
 		},
 	);
 
@@ -172,6 +265,97 @@ describe.skipIf(!hasAgeBinary)("age CLI interoperability", () => {
 });
 
 describe.skipIf(!hasRclone)("off-box archive cycle", () => {
+	test("publishes to two remotes and restores byte-identical sessions from either", async () => {
+		const layout = await makeLayout();
+		const secondRemote = join(layout.home, "second-remote");
+		const identity = await generateIdentity();
+		const recipient = await identityToRecipient(identity);
+		const fixture = await makeClaudeStore(layout.claudeRoot, {
+			main: { mtimeMs: SOURCE_MTIME_MS },
+			sidecars: [],
+		});
+		const expectedBytes = await readFile(fixture.files[0]!.absPath);
+		await writeConfiguredConfig(layout, recipient, [layout.remote, secondRemote]);
+
+		const published = await runCli(["sync"], { home: layout.home, env: layout.env });
+
+		expect(published.code).toBe(0);
+		expect(published.stdout).toContain("off-box 2/2");
+		for (const destination of [layout.remote, secondRemote]) {
+			const index = await decryptWithIdentity(
+				identity,
+				await readFile(join(destination, "test-machine", "index.jsonl.age")),
+			);
+			const record = JSON.parse(index.toString("utf8").trim()) as { path: string };
+			const archive = await decryptWithIdentity(
+				identity,
+				await readFile(join(destination, "test-machine", `${record.path}.age`)),
+			);
+			expect(archive).toEqual(await readFile(join(layout.archiveRoot, "test-machine", record.path)));
+		}
+
+		const identityPath = join(layout.home, "identity.txt");
+		await writeFile(identityPath, `${identity}\n`);
+		for (const destination of [undefined, secondRemote] as const) {
+			await Promise.all([
+				rm(layout.claudeRoot, { recursive: true, force: true }),
+				rm(layout.archiveRoot, { recursive: true, force: true }),
+			]);
+			const restored = await runCli(
+				[
+					"restore",
+					"--from-remote",
+					"--identity",
+					identityPath,
+					...(destination === undefined ? [] : ["--remote", destination]),
+					fixture.id,
+				],
+				{ home: layout.home, env: layout.env },
+			);
+			expect(restored.code).toBe(0);
+			expect(await readFile(fixture.files[0]!.absPath)).toEqual(expectedBytes);
+		}
+	});
+
+	test("isolates a broken remote and reports each remote through sync and doctor", async () => {
+		const layout = await makeLayout();
+		const brokenRemote = join(layout.home, "broken-remote");
+		const identity = await generateIdentity();
+		const recipient = await identityToRecipient(identity);
+		await makeClaudeStore(layout.claudeRoot, { main: { mtimeMs: SOURCE_MTIME_MS }, sidecars: [] });
+		await writeFile(brokenRemote, "not a directory\n");
+		await writeConfiguredConfig(layout, recipient, [brokenRemote, layout.remote]);
+
+		const published = await runCli(["sync"], { home: layout.home, env: layout.env });
+
+		expect(published.code).toBe(1);
+		expect(published.stdout).toContain("off-box 1/2");
+		expect(published.stderr).toContain(`off-box ${brokenRemote}`);
+		expect(await stat(join(layout.remote, "test-machine", "index.jsonl.age"))).toBeDefined();
+
+		const doctor = await runCli(["doctor", "--json"], { home: layout.home, env: layout.env });
+		const facts = (
+			JSON.parse(doctor.stdout) as { facts: Array<{ id: string; status: string; detail: string }> }
+		).facts.filter((fact) => fact.id === "offbox");
+		expect(facts).toHaveLength(2);
+		expect(facts).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ status: "problem", detail: `${brokenRemote} · off-box has never succeeded` }),
+				expect.objectContaining({
+					status: "ok",
+					detail: expect.stringContaining(`${layout.remote} · last off-box success`),
+				}),
+			]),
+		);
+
+		const status = await runCli(["status", "--json"], { home: layout.home, env: layout.env });
+		const offbox = (JSON.parse(status.stdout) as { offbox: Array<{ status: string; detail: string }> }).offbox;
+		expect(offbox).toHaveLength(2);
+		expect(offbox.map(({ detail }) => detail)).toEqual(
+			expect.arrayContaining([expect.stringContaining(brokenRemote), expect.stringContaining(layout.remote)]),
+		);
+	});
+
 	test("refuses a fresh install that would overwrite another machine archive", async () => {
 		const first = await makeLayout();
 		const second = await makeLayout();
@@ -279,14 +463,18 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 				.code,
 		).toBe(0);
 		expect(
-			JSON.parse(await readFile(join(layout.blotterHome, "state", "offbox-last-success.json"), "utf8")),
+			JSON.parse(
+				await readFile(join(remoteStateDirectory(layout.blotterHome, layout.remote), "last-success.json"), "utf8"),
+			),
 		).toMatchObject({ uploaded: 1 });
 		const secondRemote = join(layout.home, "second-remote");
 		expect(
 			(await runCli(initArguments(secondRemote, firstRecipient), { home: layout.home, env: layout.env })).code,
 		).toBe(0);
 		expect(
-			JSON.parse(await readFile(join(layout.blotterHome, "state", "offbox-last-success.json"), "utf8")),
+			JSON.parse(
+				await readFile(join(remoteStateDirectory(layout.blotterHome, secondRemote), "last-success.json"), "utf8"),
+			),
 		).toMatchObject({ uploaded: 1 });
 
 		const secondIdentity = await generateIdentity();
@@ -295,7 +483,9 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 			(await runCli(initArguments(secondRemote, secondRecipient), { home: layout.home, env: layout.env })).code,
 		).toBe(0);
 		expect(
-			JSON.parse(await readFile(join(layout.blotterHome, "state", "offbox-last-success.json"), "utf8")),
+			JSON.parse(
+				await readFile(join(remoteStateDirectory(layout.blotterHome, secondRemote), "last-success.json"), "utf8"),
+			),
 		).toMatchObject({ uploaded: 1 });
 		const config = JSON.parse(await readFile(join(layout.blotterHome, "config.json"), "utf8")) as {
 			machine: string;
@@ -347,10 +537,11 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		expect(config.offbox).toEqual({
 			mode: "configured",
 			recipient,
-			remote: { destination: layout.remote, rcloneConfig: "default" },
+			remotes: [{ type: "rclone", destination: layout.remote, rcloneConfig: "default" }],
 		});
 		const encryptedIndexPath = join(layout.remote, config.machine, "index.jsonl.age");
-		const index = (await decryptWithIdentity(identity, await readFile(encryptedIndexPath))).toString("utf8");
+		const firstEncryptedIndex = await readFile(encryptedIndexPath);
+		const index = (await decryptWithIdentity(identity, firstEncryptedIndex)).toString("utf8");
 		const records = index
 			.trim()
 			.split("\n")
@@ -367,15 +558,19 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 
 		const dataPaths = records.map((record) => join(layout.remote, config.machine, `${record.path}.age`));
 		const firstCiphertexts = await Promise.all(dataPaths.map(async (path) => await readFile(path)));
-		const uploadedPath = join(layout.blotterHome, "state", "offbox-uploaded.jsonl");
+		const statePath = remoteStateDirectory(layout.blotterHome, layout.remote);
+		const uploadedPath = join(statePath, "uploaded.jsonl");
 		const firstUploadedState = await readFile(uploadedPath, "utf8");
 
 		const second = await runCli(["sync"], { home: layout.home, env: layout.env });
 		expect(second.code).toBe(0);
 		expect(await readFile(uploadedPath, "utf8")).toBe(firstUploadedState);
-		expect(
-			JSON.parse(await readFile(join(layout.blotterHome, "state", "offbox-last-success.json"), "utf8")),
-		).toMatchObject({ uploaded: 0, bytes: 0 });
+		expect(JSON.parse(await readFile(join(statePath, "last-success.json"), "utf8"))).toMatchObject({
+			uploaded: 0,
+			bytes: 0,
+			indexUploaded: false,
+		});
+		expect(await readFile(encryptedIndexPath)).toEqual(firstEncryptedIndex);
 		for (const [index, path] of dataPaths.entries()) {
 			expect(await readFile(path)).toEqual(firstCiphertexts[index]);
 		}
@@ -394,12 +589,16 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		const grown = await runCli(["sync"], { home: layout.home, env: layout.env });
 		expect(grown.code).toBe(0);
 		expect(grown.stdout).toContain("archived 1, unchanged 1, failed 0");
-		expect(
-			JSON.parse(await readFile(join(layout.blotterHome, "state", "offbox-last-success.json"), "utf8")),
-		).toMatchObject({ uploaded: 1, bytes: expect.any(Number) });
+		expect(JSON.parse(await readFile(join(statePath, "last-success.json"), "utf8"))).toMatchObject({
+			uploaded: 1,
+			bytes: expect.any(Number),
+			indexUploaded: true,
+		});
 		expect((await readFile(uploadedPath, "utf8")).trim().split("\n")).toHaveLength(3);
 		expect(await readFile(dataPaths[0]!)).not.toEqual(firstCiphertexts[0]);
 		expect(await readFile(dataPaths[1]!)).toEqual(firstCiphertexts[1]);
+		expect(await readFile(encryptedIndexPath)).not.toEqual(firstEncryptedIndex);
+		expect((await stat(encryptedIndexPath)).mtimeMs).toBeGreaterThanOrEqual((await stat(dataPaths[0]!)).mtimeMs);
 		expect(await readFile(remoteMarker, "utf8")).toBe("copy must not delete this\n");
 
 		for (const path of await listFiles(layout.blotterHome)) {
@@ -412,7 +611,7 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 			renderRecoveryKit({
 				identity,
 				recipient,
-				remote: { type: "rclone", destination: layout.remote },
+				remotes: [{ type: "rclone", destination: layout.remote }],
 				createdAt: "2026-07-13T10:11:12.000Z",
 			}),
 		);

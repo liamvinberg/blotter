@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { BlotterConfig } from "../core/config.js";
+import type { BlotterConfig, RemoteConfig } from "../core/config.js";
 import { BlotterError, errorMessage } from "../core/errors.js";
 import {
 	type ArchivedUnit,
@@ -11,7 +11,8 @@ import {
 	restoreArchivedUnit,
 } from "../core/restore.js";
 import { decryptWithIdentity, identityToRecipient, parseIdentityFile } from "./age.js";
-import { copyFile, joinRcloneDestination, type RcloneConfigMode } from "./rclone.js";
+import type { ArchiveRemote } from "./remote.js";
+import { createArchiveRemote } from "./remote.js";
 
 export type RemoteRestoreResult =
 	| { kind: "listed"; units: ArchivedUnit[] }
@@ -29,15 +30,14 @@ async function readIdentity(path: string): Promise<string> {
 }
 
 async function pullAndDecryptFile(options: {
-	remotePath: string;
+	pull: (destinationPath: string) => Promise<void>;
 	encryptedPath: string;
 	decryptedPath: string;
-	mode: RcloneConfigMode;
 	identity: string;
 	label: string;
 }): Promise<void> {
 	await mkdir(dirname(options.encryptedPath), { recursive: true });
-	await copyFile(options.remotePath, options.encryptedPath, options.mode);
+	await options.pull(options.encryptedPath);
 	try {
 		await writeFile(
 			options.decryptedPath,
@@ -48,16 +48,35 @@ async function pullAndDecryptFile(options: {
 	}
 }
 
+function selectRemote(config: BlotterConfig, destination: string | undefined): RemoteConfig {
+	if (config.offbox.mode !== "configured") {
+		throw new BlotterError("off-box is not configured; run `blotter init` first");
+	}
+	if (destination === undefined) {
+		return config.offbox.remotes[0];
+	}
+	const remote = config.offbox.remotes.find((candidate) => candidate.destination === destination);
+	if (remote === undefined) {
+		// DRAFT copy
+		throw new BlotterError(`no configured remote has destination ${destination}`);
+	}
+	return remote;
+}
+
 export async function restoreFromRemote(options: {
 	config: BlotterConfig;
 	machine: string;
 	identityPath: string;
+	remoteDestination: string | undefined;
 	prefix: string | undefined;
 	force: boolean;
 }): Promise<RemoteRestoreResult> {
 	if (options.config.offbox.mode !== "configured") {
 		throw new BlotterError("off-box is not configured; run `blotter init` first");
 	}
+	const offbox = options.config.offbox;
+	const remoteConfig = selectRemote(options.config, options.remoteDestination);
+	const remote: ArchiveRemote = createArchiveRemote(remoteConfig);
 	const identity = await readIdentity(options.identityPath);
 	let recipient: string;
 	try {
@@ -65,7 +84,7 @@ export async function restoreFromRemote(options: {
 	} catch (error) {
 		throw new BlotterError(`could not parse age identity: ${errorMessage(error)}`);
 	}
-	if (recipient !== options.config.offbox.recipient) {
+	if (recipient !== offbox.recipient) {
 		throw new BlotterError("identity does not match the configured age recipient");
 	}
 
@@ -75,10 +94,9 @@ export async function restoreFromRemote(options: {
 		const encryptedIndexPath = join(stagePath, "index.jsonl.age");
 		await mkdir(machinePath, { recursive: true });
 		await pullAndDecryptFile({
-			remotePath: joinRcloneDestination(options.config.offbox.remote.destination, `${options.machine}/index.jsonl.age`),
+			pull: async (destinationPath) => await remote.getIndex(options.machine, destinationPath),
 			encryptedPath: encryptedIndexPath,
 			decryptedPath: join(machinePath, "index.jsonl"),
-			mode: options.config.offbox.remote.rcloneConfig,
 			identity,
 			label: "remote index",
 		});
@@ -92,13 +110,10 @@ export async function restoreFromRemote(options: {
 		for (const file of unit.files) {
 			const encryptedPath = `${file.archivePath}.age`;
 			await pullAndDecryptFile({
-				remotePath: joinRcloneDestination(
-					options.config.offbox.remote.destination,
-					`${options.machine}/${file.record.path}.age`,
-				),
+				pull: async (destinationPath) =>
+					await remote.getArchiveObject(options.machine, file.record.path, destinationPath),
 				encryptedPath,
 				decryptedPath: file.archivePath,
-				mode: options.config.offbox.remote.rcloneConfig,
 				identity,
 				label: `remote file ${file.record.path}`,
 			});

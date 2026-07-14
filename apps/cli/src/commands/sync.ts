@@ -5,7 +5,7 @@ import { resolveHome } from "../core/home.js";
 import { withSyncLock } from "../core/lock.js";
 import { appendLog } from "../core/log.js";
 import { writeRunStamps } from "../core/stamps.js";
-import { publishOffbox, remindOffboxSkipped } from "../offbox/outbox.js";
+import { publishOffbox, type RemotePublishOutcome, remindOffboxSkipped } from "../offbox/outbox.js";
 
 const USAGE = "Usage: blotter sync\n";
 
@@ -20,6 +20,10 @@ function reportSummary(summary: string, options: SyncOutputOptions): void {
 	if (options.writeSummary !== false) {
 		process.stdout.write(`${summary}\n`);
 	}
+}
+
+function offboxSummary(outcomes: RemotePublishOutcome[]): string {
+	return `off-box ${outcomes.filter((outcome) => outcome.ok).length}/${outcomes.length}`; // DRAFT copy
 }
 
 export async function runSync(argv: string[], output: SyncOutputOptions = {}): Promise<number> {
@@ -37,6 +41,7 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 		let failed = 0;
 		let repaired = 0;
 		let errors: string[] = [];
+		let offboxOutcomes: RemotePublishOutcome[] = [];
 		let offboxError: string | undefined;
 		try {
 			const result = await sweep(config, process.env);
@@ -53,7 +58,7 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 		if (ok) {
 			try {
 				if (config.offbox.mode === "configured") {
-					await publishOffbox(home, config, config.offbox);
+					offboxOutcomes = await publishOffbox(home, config, config.offbox);
 				} else {
 					await remindOffboxSkipped(home);
 				}
@@ -61,8 +66,11 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 				offboxError = error instanceof Error ? error.message : String(error);
 			}
 		}
+		const offboxFailures = offboxOutcomes.filter(
+			(outcome): outcome is RemotePublishOutcome & { error: string } => !outcome.ok && outcome.error !== undefined,
+		);
 		const finishedAt = new Date().toISOString();
-		const summary = `archived ${archived}, unchanged ${unchanged}, failed ${failed}${repaired > 0 ? `, repaired ${repaired}` : ""}`;
+		const summary = `archived ${archived}, unchanged ${unchanged}, failed ${failed}${repaired > 0 ? `, repaired ${repaired}` : ""}${offboxOutcomes.length > 0 ? `, ${offboxSummary(offboxOutcomes)}` : ""}`; // DRAFT copy
 		await writeRunStamps(home.statePath, {
 			startedAt,
 			finishedAt,
@@ -71,11 +79,18 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 			unchanged,
 			failed,
 			repaired,
-			...(offboxError === undefined ? {} : { offbox: offboxError }),
+			...(offboxFailures.length > 0
+				? { offbox: offboxFailures.map((outcome) => `${outcome.destination}: ${outcome.error}`).join("; ") }
+				: offboxError === undefined
+					? {}
+					: { offbox: offboxError }),
 		});
 		await appendLog(home.logsPath, summary, new Date(finishedAt));
 		if (offboxError !== undefined) {
 			await appendLog(home.logsPath, `off-box failed: ${offboxError}`, new Date(finishedAt));
+		}
+		for (const outcome of offboxFailures) {
+			await appendLog(home.logsPath, `off-box failed (${outcome.destination}): ${outcome.error}`, new Date(finishedAt)); // DRAFT copy
 		}
 		for (const error of errors) {
 			process.stderr.write(`blotter sync: ${error}\n`);
@@ -83,8 +98,11 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 		if (offboxError !== undefined) {
 			process.stderr.write(`blotter sync: off-box: ${offboxError}\n`);
 		}
+		for (const outcome of offboxFailures) {
+			process.stderr.write(`blotter sync: off-box ${outcome.destination}: ${outcome.error}\n`); // DRAFT copy
+		}
 		reportSummary(summary, output);
-		return ok && offboxError === undefined ? 0 : 1;
+		return ok && offboxFailures.length === 0 && offboxError === undefined ? 0 : 1;
 	});
 	if (!locked.acquired) {
 		output.onBusy?.();

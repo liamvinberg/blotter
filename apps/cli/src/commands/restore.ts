@@ -10,7 +10,7 @@ import {
 import { restoreFromRemote } from "../offbox/remote-restore.js";
 
 const USAGE =
-	"Usage: blotter restore [--machine <name>] [--force] [--from-remote --identity <file>] [<id-or-prefix>]\n";
+	"Usage: blotter restore [--machine <name>] [--force] [--from-remote --identity <file> [--remote <destination>]] [<id-or-prefix>]\n"; // DRAFT copy
 const MACHINE_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 interface RestoreOptions {
@@ -18,6 +18,7 @@ interface RestoreOptions {
 	force: boolean;
 	fromRemote: boolean;
 	identityPath?: string;
+	remoteDestination?: string;
 	prefix?: string;
 }
 
@@ -70,6 +71,18 @@ function parseOptions(argv: string[]): RestoreOptions | null {
 				index += 1;
 				break;
 			}
+			case "--remote": {
+				if (options.remoteDestination !== undefined) {
+					return usageError("--remote may only be passed once"); // DRAFT copy
+				}
+				const value = argv[index + 1];
+				if (value === undefined || value.startsWith("--")) {
+					return usageError("--remote requires a destination"); // DRAFT copy
+				}
+				options.remoteDestination = value;
+				index += 1;
+				break;
+			}
 			default:
 				if (argument === undefined) {
 					return usageError("missing argument");
@@ -91,6 +104,9 @@ function parseOptions(argv: string[]): RestoreOptions | null {
 	}
 	if (!options.fromRemote && options.identityPath !== undefined) {
 		return usageError("--identity requires --from-remote");
+	}
+	if (!options.fromRemote && options.remoteDestination !== undefined) {
+		return usageError("--remote requires --from-remote"); // DRAFT copy
 	}
 	return options;
 }
@@ -134,6 +150,7 @@ export async function runRestore(argv: string[]): Promise<number> {
 			config,
 			machine,
 			identityPath: options.identityPath!,
+			remoteDestination: options.remoteDestination,
 			prefix: options.prefix,
 			force: options.force,
 		});

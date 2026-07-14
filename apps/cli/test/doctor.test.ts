@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -5,6 +6,11 @@ import { appendJsonLine, makeClaudeStore, makeCodexStore, makePiStore } from "./
 import { makeTempHome, runCli } from "./helpers/run-cli.js";
 
 const homes: string[] = [];
+
+function remoteStateDirectory(blotterHome: string, destination: string): string {
+	const id = createHash("sha256").update(`rclone\0${destination}`).digest("hex");
+	return join(blotterHome, "state", "offbox", id);
+}
 
 interface JsonFact {
 	id: string;
@@ -85,7 +91,7 @@ describe("blotter doctor", () => {
 			status: "info",
 			detail: expect.stringContaining("skipped"),
 		});
-		expect(await readFile(join(layout.blotterHome, "config.json"), "utf8")).toContain('"version": 1');
+		expect(await readFile(join(layout.blotterHome, "config.json"), "utf8")).toContain('"version": 2');
 		expect([0, 2]).toContain(result.code);
 		expect(result.stderr).toBe("");
 	});
@@ -311,7 +317,7 @@ describe("blotter doctor", () => {
 		config.offbox = {
 			mode: "configured",
 			recipient: "age1synthetic",
-			remote: { destination: "/synthetic/remote", rcloneConfig: "managed" },
+			remotes: [{ type: "rclone", destination: "/synthetic/remote", rcloneConfig: "managed" }],
 		};
 		await writeFile(configPath, `${JSON.stringify(config)}\n`);
 
@@ -324,7 +330,7 @@ describe("blotter doctor", () => {
 		expect(result.code).toBe(2);
 		expect(report.facts.find(({ id }) => id === "offbox")).toMatchObject({
 			status: "problem",
-			detail: "off-box has never succeeded",
+			detail: "/synthetic/remote · off-box has never succeeded",
 		});
 	});
 
@@ -335,12 +341,14 @@ describe("blotter doctor", () => {
 		config.offbox = {
 			mode: "configured",
 			recipient: "age1synthetic",
-			remote: { destination: "/synthetic/remote", rcloneConfig: "default" },
+			remotes: [{ type: "rclone", destination: "/synthetic/remote", rcloneConfig: "default" }],
 		};
 		await writeFile(configPath, `${JSON.stringify(config)}\n`);
 		const finishedAt = new Date().toISOString();
+		const stateRoot = remoteStateDirectory(layout.blotterHome, "/synthetic/remote");
+		await mkdir(stateRoot, { recursive: true });
 		await writeFile(
-			join(layout.blotterHome, "state", "offbox-last-success.json"),
+			join(stateRoot, "last-success.json"),
 			`${JSON.stringify({ finishedAt, uploaded: 2, bytes: 1234 })}\n`,
 		);
 

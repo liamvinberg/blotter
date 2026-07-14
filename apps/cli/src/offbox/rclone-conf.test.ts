@@ -1,7 +1,20 @@
 import { describe, expect, test } from "vitest";
-import { renderS3Remote, renderSftpRemote } from "./rclone-conf.js";
+import { managedRcloneRemoteName, renderS3Remote, renderSftpRemote } from "./rclone-conf.js";
 
 describe("managed rclone configuration", () => {
+	test("keeps the original section and numbers additional managed remotes", () => {
+		expect([0, 1, 2].map(managedRcloneRemoteName)).toEqual(["blotter", "blotter-2", "blotter-3"]);
+		expect(
+			renderS3Remote(
+				{
+					endpoint: "https://objects.example.com",
+					accessKeyId: "access-key-id",
+					secretAccessKey: "secret-access-key",
+				},
+				managedRcloneRemoteName(1),
+			),
+		).toContain("[blotter-2]");
+	});
 	test("renders an S3-compatible remote with credentials inline", () => {
 		expect(
 			renderS3Remote({

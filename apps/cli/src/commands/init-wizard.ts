@@ -39,7 +39,7 @@ const RCLONE_INSTALL_COPY = {
 
 type WizardCancelled = typeof WIZARD_CANCELLED;
 type ConfiguredOffbox = Extract<OffboxConfig, { mode: "configured" }>;
-type OffboxRemote = Extract<OffboxConfig, { mode: "configured" }>["remote"];
+type OffboxRemote = Extract<OffboxConfig, { mode: "configured" }>["remotes"][number];
 
 type OffboxSetupResult =
 	| { kind: "skipped"; config: BlotterConfig }
@@ -157,7 +157,7 @@ async function askS3Remote(): Promise<RemoteSetup | WizardCancelled> {
 	const destination = s3Destination(bucket, prefix);
 
 	return {
-		remote: { destination, rcloneConfig: "managed" },
+		remote: { type: "rclone", destination, rcloneConfig: "managed" },
 		recovery: {
 			type: "s3-compatible",
 			destination,
@@ -201,7 +201,7 @@ async function askSftpRemote(): Promise<RemoteSetup | WizardCancelled> {
 	const destination = `blotter:${remotePath}`;
 
 	return {
-		remote: { destination, rcloneConfig: "managed" },
+		remote: { type: "rclone", destination, rcloneConfig: "managed" },
 		recovery: {
 			type: "sftp",
 			destination,
@@ -233,7 +233,7 @@ async function askCustomRemote(): Promise<RemoteSetup | WizardCancelled> {
 	);
 	if (configMode === WIZARD_CANCELLED) return configMode;
 	return {
-		remote: { destination, rcloneConfig: configMode },
+		remote: { type: "rclone", destination, rcloneConfig: configMode },
 		recovery: { type: "rclone", destination },
 	};
 }
@@ -345,7 +345,7 @@ async function configureOffbox(config: BlotterConfig, homePath: string): Promise
 	const kit = renderRecoveryKit({
 		identity,
 		recipient,
-		remote: remote.recovery,
+		remotes: [remote.recovery],
 		createdAt: new Date().toISOString(),
 	});
 	const saved = await saveRecoveryKit(kit, homePath);
@@ -360,7 +360,7 @@ async function configureOffbox(config: BlotterConfig, homePath: string): Promise
 	if (remote.managedConfig !== undefined) {
 		await writeManagedRcloneConfig(home.rcloneConfPath, remote.managedConfig);
 	}
-	const offbox: ConfiguredOffbox = { mode: "configured", recipient, remote: remote.remote };
+	const offbox: ConfiguredOffbox = { mode: "configured", recipient, remotes: [remote.remote] };
 	return { kind: "configured", config: await writeInitConfig(home, config.archiveRoot, offbox), offbox, identity };
 }
 
@@ -465,7 +465,7 @@ export async function runInitWizard(): Promise<number> {
 	if (sweepCancelled) return 1;
 
 	let remoteCode = 0;
-	if (syncCode === 0 && configured.kind === "configured") {
+	if (configured.kind === "configured") {
 		let remoteCancelled = false;
 		const remoteCheck = spinner({
 			onCancel() {
@@ -473,12 +473,19 @@ export async function runInitWizard(): Promise<number> {
 			},
 		});
 		remoteCheck.start("Checking remote index");
-		try {
-			await smokeTestRemoteIndex(config, configured.offbox, configured.identity);
+		const remoteErrors: string[] = [];
+		for (const remote of configured.offbox.remotes) {
+			try {
+				await smokeTestRemoteIndex(config, remote, configured.identity);
+			} catch (error) {
+				remoteErrors.push(`${remote.destination}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		if (remoteErrors.length === 0) {
 			if (!remoteCancelled) remoteCheck.stop("Remote index checked.");
-		} catch (error) {
+		} else {
 			if (!remoteCancelled) {
-				remoteCheck.error(`Remote index check failed: ${error instanceof Error ? error.message : String(error)}`);
+				remoteCheck.error(`Remote index check failed: ${remoteErrors.join("; ")}`); // DRAFT copy
 			}
 			remoteCode = 1;
 		}

@@ -166,10 +166,13 @@ function requestedOffbox(options: InitOptions): OffboxConfig | undefined {
 		return {
 			mode: "configured",
 			recipient: options.ageRecipient!,
-			remote: {
-				destination: options.offboxRemote!,
-				rcloneConfig: options.rcloneConfig ?? "default",
-			},
+			remotes: [
+				{
+					type: "rclone",
+					destination: options.offboxRemote!,
+					rcloneConfig: options.rcloneConfig ?? "default",
+				},
+			],
 		};
 	}
 	return undefined;

@@ -85,7 +85,7 @@ export async function runStatus(argv: string[]): Promise<number> {
 		checkOffbox(context),
 	]);
 	const report = {
-		v: 1,
+		v: 2,
 		machine: config.machine,
 		archiveRoot: config.archiveRoot,
 		schedule: {
@@ -98,7 +98,7 @@ export async function runStatus(argv: string[]): Promise<number> {
 		lastSuccess: stampJson(fresh.lastSuccess, context.now),
 		fresh: { status: fresh.fact.status, detail: fresh.fact.detail },
 		harnesses,
-		offbox: { status: offbox.status, detail: offbox.detail },
+		offbox: offbox.map((item) => ({ status: item.status, detail: item.detail })),
 	};
 	if (options.json) {
 		process.stdout.write(`${JSON.stringify(report)}\n`);
@@ -114,6 +114,8 @@ export async function runStatus(argv: string[]): Promise<number> {
 			`${tally.harness}: ${tally.units} unit${tally.units === 1 ? "" : "s"} · ${tally.files} file${tally.files === 1 ? "" : "s"} · ${formatBytes(tally.storedBytes)}\n`,
 		);
 	}
-	process.stdout.write(`offbox: ${offbox.detail}\n`);
+	for (const item of offbox) {
+		process.stdout.write(`offbox: ${item.detail}\n`);
+	}
 	return 0;
 }

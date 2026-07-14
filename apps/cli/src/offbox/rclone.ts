@@ -99,24 +99,6 @@ export async function copyFile(source: string, destinationFile: string, mode: Rc
 	await runRclone("copyto", [source, destinationFile], mode);
 }
 
-export async function statRemoteFile(path: string, mode: RcloneConfigMode): Promise<void> {
-	const output = await runRclone("lsjson", ["--stat", path], mode);
-	let item: unknown;
-	try {
-		item = JSON.parse(output);
-	} catch {
-		throw new BlotterError("rclone lsjson returned invalid JSON");
-	}
-	if (
-		typeof item !== "object" ||
-		item === null ||
-		Array.isArray(item) ||
-		(item as { IsDir?: unknown }).IsDir !== false
-	) {
-		throw new BlotterError(`rclone lsjson did not find a file at ${path}`);
-	}
-}
-
 export function joinRcloneDestination(destination: string, relativePath: string): string {
 	const child = relativePath.replace(/^\/+/, "");
 	if (destination.endsWith(":")) {

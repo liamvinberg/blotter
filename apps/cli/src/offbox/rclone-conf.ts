@@ -18,9 +18,16 @@ function renderRemote(lines: string[]): string {
 	return `${lines.join("\n")}\n`;
 }
 
-export function renderS3Remote(input: S3RemoteInput): string {
+export function managedRcloneRemoteName(index: number): string {
+	if (!Number.isInteger(index) || index < 0) {
+		throw new Error("managed remote index must be a non-negative integer"); // DRAFT copy
+	}
+	return index === 0 ? "blotter" : `blotter-${index + 1}`;
+}
+
+export function renderS3Remote(input: S3RemoteInput, remoteName = managedRcloneRemoteName(0)): string {
 	return renderRemote([
-		"[blotter]",
+		`[${remoteName}]`,
 		"type = s3",
 		"provider = Other",
 		`access_key_id = ${input.accessKeyId}`,
@@ -30,9 +37,9 @@ export function renderS3Remote(input: S3RemoteInput): string {
 	]);
 }
 
-export function renderSftpRemote(input: SftpRemoteInput): string {
+export function renderSftpRemote(input: SftpRemoteInput, remoteName = managedRcloneRemoteName(0)): string {
 	return renderRemote([
-		"[blotter]",
+		`[${remoteName}]`,
 		"type = sftp",
 		`host = ${input.host}`,
 		`user = ${input.user}`,

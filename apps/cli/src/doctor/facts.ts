@@ -7,7 +7,7 @@ import { join } from "node:path";
 import * as zlib from "node:zlib";
 import type { HarnessId } from "../adapters/adapter.js";
 import { adapters, unsupportedStores } from "../adapters/registry.js";
-import type { BlotterConfig } from "../core/config.js";
+import { type BlotterConfig, type RemoteConfig, remoteStatePath } from "../core/config.js";
 import { commandOnPath } from "../core/exec.js";
 import { isEnoent, pathExists } from "../core/fs.js";
 import type { BlotterHome } from "../core/home.js";
@@ -720,31 +720,45 @@ function compressionFact(): Fact {
 	}
 }
 
-export async function checkOffbox(context: DoctorContext): Promise<Fact> {
-	if (context.config.offbox.mode === "skipped") {
-		return fact("offbox", "info", `off-box skipped on ${context.config.offbox.skippedAt.slice(0, 10)}`);
-	}
-	const path = join(context.home.statePath, "offbox-last-success.json");
+async function checkRemoteOffbox(context: DoctorContext, remote: RemoteConfig): Promise<Fact> {
+	const prefix = `${remote.destination} · `; // DRAFT copy
+	const path = join(remoteStatePath(context.home, remote), "last-success.json");
 	let value: unknown;
 	try {
 		value = JSON.parse(await readFile(path, "utf8")) as unknown;
 	} catch (error) {
 		if (isEnoent(error)) {
-			return fact("offbox", "problem", "off-box has never succeeded");
+			return fact("offbox", "problem", `${prefix}off-box has never succeeded`); // DRAFT copy
 		}
-		return fact("offbox", "problem", "offbox-last-success is unreadable or invalid");
+		return fact("offbox", "problem", `${prefix}last-success is unreadable or invalid`); // DRAFT copy
 	}
 	const rawFinishedAt =
 		typeof value === "object" && value !== null ? (value as Record<string, unknown>).finishedAt : undefined;
 	const finishedAt = typeof rawFinishedAt === "string" ? rawFinishedAt : null;
 	const finishedAtMs = finishedAt === null ? Number.NaN : Date.parse(finishedAt);
 	if (Number.isNaN(finishedAtMs)) {
-		return fact("offbox", "problem", "offbox-last-success has an invalid finishedAt");
+		return fact("offbox", "problem", `${prefix}last-success has an invalid finishedAt`); // DRAFT copy
 	}
 	const elapsed = ageMs(finishedAtMs, context.now);
+	// DRAFT copy
 	return elapsed < windowMs(context)
-		? fact("offbox", "ok", `last off-box success ${formatAge(elapsed)}`, { finishedAt })
-		: fact("offbox", "problem", `last off-box success ${formatAge(elapsed)}`, { finishedAt });
+		? fact("offbox", "ok", `${prefix}last off-box success ${formatAge(elapsed)}`, {
+				finishedAt,
+				destination: remote.destination,
+			})
+		: fact("offbox", "problem", `${prefix}last off-box success ${formatAge(elapsed)}`, {
+				finishedAt,
+				destination: remote.destination,
+			});
+}
+
+export async function checkOffbox(context: DoctorContext): Promise<Fact[]> {
+	if (context.config.offbox.mode === "skipped") {
+		return [fact("offbox", "info", `off-box skipped on ${context.config.offbox.skippedAt.slice(0, 10)}`)];
+	}
+	return await Promise.all(
+		context.config.offbox.remotes.map(async (remote) => await checkRemoteOffbox(context, remote)),
+	);
 }
 
 export async function collectEnvironmentFacts(context: DoctorContext): Promise<Fact[]> {
@@ -754,7 +768,7 @@ export async function collectEnvironmentFacts(context: DoctorContext): Promise<F
 	const disk = await diskHeadroomFact(context);
 	const compression = compressionFact();
 	const offbox = await checkOffbox(context);
-	return [...unsupported, readable, writable, disk, compression, offbox];
+	return [...unsupported, readable, writable, disk, compression, ...offbox];
 }
 
 export async function readHarnessTallies(context: DoctorContext): Promise<HarnessTally[]> {

@@ -7,14 +7,14 @@ import { makeTempHome, runCli } from "./helpers/run-cli.js";
 const homes: string[] = [];
 
 interface StatusJson {
-	v: 1;
+	v: 2;
 	machine: string;
 	archiveRoot: string;
 	schedule: { installed: boolean; live: "not-checked"; liveDetail: string };
 	lastRun: { ok: boolean; archived: number; unchanged: number; failed: number } | null;
 	lastSuccess: { ok: boolean } | null;
 	harnesses: Array<{ harness: string; units: number; files: number; storedBytes: number }>;
-	offbox: { status: string; detail: string };
+	offbox: Array<{ status: string; detail: string }>;
 }
 
 afterEach(async () => {
@@ -82,12 +82,12 @@ describe("blotter status", () => {
 		expect(result.code).toBe(0);
 		expect(result.stderr).toBe("");
 		expect(report).toMatchObject({
-			v: 1,
+			v: 2,
 			archiveRoot: layout.archiveRoot,
 			schedule: { installed: true, live: "not-checked", liveDetail: expect.stringContaining("doctor") },
 			lastRun: { ok: true, archived: 5, unchanged: 0, failed: 0 },
 			lastSuccess: { ok: true },
-			offbox: { status: "info", detail: expect.stringContaining("skipped") },
+			offbox: [{ status: "info", detail: expect.stringContaining("skipped") }],
 		});
 		expect(report.harnesses).toEqual([
 			{ harness: "claude-code", units: 1, files: 3, storedBytes: expect.any(Number) },
