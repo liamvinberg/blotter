@@ -23,7 +23,7 @@
 		"node": ">=22.16"
 	},
 	"bin": {
-		"packbat": "./bin/packbat.js"
+		"packbat": "bin/packbat.js"
 	},
 	"files": [
 		"bin",

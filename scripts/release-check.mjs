@@ -52,7 +52,7 @@ function checkMetadata() {
 		repository: { type: "git", url: "git+https://github.com/liamvinberg/packbat.git" },
 		bugs: { url: "https://github.com/liamvinberg/packbat/issues" },
 		engines: { node: ">=22.16" },
-		bin: { packbat: "./bin/packbat.js" },
+		bin: { packbat: "bin/packbat.js" },
 		publishConfig: { access: "public" },
 	};
 	for (const [key, value] of Object.entries(expected)) {
