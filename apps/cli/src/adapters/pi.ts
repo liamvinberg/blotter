@@ -5,11 +5,9 @@ import { type HarnessAdapter, type SessionFile, type SessionUnit, UUID_SOURCE } 
 const SANITIZED_ISO_SOURCE = "\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z";
 const SESSION_PATTERN = new RegExp(`^${SANITIZED_ISO_SOURCE}_(${UUID_SOURCE})\\.jsonl$`, "i");
 
-async function enumerateProject(storeRoot: string, projectDirectory: string): Promise<SessionUnit[]> {
+async function enumerateDirectory(storeRoot: string, directory: string): Promise<SessionUnit[]> {
 	const units: SessionUnit[] = [];
-	const entries = (await readDirectoryOrEmpty(projectDirectory)).sort((left, right) =>
-		left.name.localeCompare(right.name),
-	);
+	const entries = (await readDirectoryOrEmpty(directory)).sort((left, right) => left.name.localeCompare(right.name));
 	for (const entry of entries) {
 		if (entry.name === ".DS_Store" || !entry.isFile()) {
 			continue;
@@ -18,7 +16,7 @@ async function enumerateProject(storeRoot: string, projectDirectory: string): Pr
 		if (match?.[1] === undefined) {
 			continue;
 		}
-		const absPath = join(projectDirectory, entry.name);
+		const absPath = join(directory, entry.name);
 		const stats = await statOrNull(absPath);
 		if (stats === null || !stats.isFile()) {
 			continue;
@@ -44,13 +42,13 @@ export const piAdapter: HarnessAdapter = {
 		return env.PI_CODING_AGENT_SESSION_DIR ? env.PI_CODING_AGENT_SESSION_DIR : join(home, ".pi", "agent", "sessions");
 	},
 	async enumerate(storeRoot) {
-		const units: SessionUnit[] = [];
+		const units = await enumerateDirectory(storeRoot, storeRoot);
 		const projects = (await readDirectoryOrEmpty(storeRoot)).sort((left, right) => left.name.localeCompare(right.name));
 		for (const project of projects) {
 			if (project.name === ".DS_Store" || !project.isDirectory()) {
 				continue;
 			}
-			units.push(...(await enumerateProject(storeRoot, join(storeRoot, project.name))));
+			units.push(...(await enumerateDirectory(storeRoot, join(storeRoot, project.name))));
 		}
 		return units.sort((left, right) => left.files[0]!.relPath.localeCompare(right.files[0]!.relPath));
 	},
