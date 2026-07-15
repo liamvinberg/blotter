@@ -275,9 +275,14 @@ describe("ciphertext uploads", () => {
 		expect(
 			await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?").bind(linked.account.id).first(),
 		).toEqual({ reserved_bytes: 4, used_bytes: 6 });
-		expect(
-			await env.DB.prepare("SELECT state FROM upload_reservations WHERE id = ?").bind(expiring.reservationId).first(),
-		).toEqual({ state: "expired" });
+		const expired = await reserve(linked.accessToken, {
+			bytes: new Uint8Array(5),
+			idempotencyKey: "expiring-replacement",
+			logicalObjectKey,
+			machineRemoteId,
+		});
+		expect(expired.status).toBe(200);
+		expect(await expired.json()).toMatchObject({ reservationId: expiring.reservationId, state: "expired" });
 	});
 
 	it("reconciles an expired uploaded object before releasing another reservation", async () => {
@@ -307,9 +312,14 @@ describe("ciphertext uploads", () => {
 		expect(
 			await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?").bind(linked.account.id).first(),
 		).toEqual({ reserved_bytes: 2, used_bytes: 3 });
-		expect(
-			await env.DB.prepare("SELECT state FROM upload_reservations WHERE id = ?").bind(first.reservationId).first(),
-		).toEqual({ state: "completed" });
+		const completed = await reserve(linked.accessToken, {
+			bytes: firstBytes,
+			idempotencyKey: "expired-upload",
+			logicalObjectKey: "codex/first.age",
+			machineRemoteId,
+		});
+		expect(completed.status).toBe(200);
+		expect(await completed.json()).toMatchObject({ reservationId: first.reservationId, state: "completed" });
 	});
 
 	it("refuses finalization and removes an object whose length or checksum differs", async () => {
