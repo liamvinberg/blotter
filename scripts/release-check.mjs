@@ -79,12 +79,20 @@ function checkTarballFiles(manifest) {
 			path !== "README.md" &&
 			path !== "LICENSE" &&
 			path !== "bin/packbat.js" &&
+			path !== "skills/packbat-retrieval/SKILL.md" &&
 			!/^dist\/[a-z0-9-]+\.js$/i.test(path),
 	);
 	if (unexpected.length > 0) {
 		fail(`unexpected files in npm tarball:\n${unexpected.map((path) => `- ${path}`).join("\n")}`);
 	}
-	for (const required of ["package.json", "README.md", "LICENSE", "bin/packbat.js", "dist/main.js"]) {
+	for (const required of [
+		"package.json",
+		"README.md",
+		"LICENSE",
+		"bin/packbat.js",
+		"dist/main.js",
+		"skills/packbat-retrieval/SKILL.md",
+	]) {
 		if (!paths.includes(required)) {
 			fail(`npm tarball is missing ${required}`);
 		}
