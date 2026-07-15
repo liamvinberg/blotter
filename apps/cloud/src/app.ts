@@ -11,16 +11,24 @@ import {
 } from "./auth/tokens.js";
 import {
 	credentialIsActive,
-	deleteAccount,
 	findOrCreateAccount,
 	issueCredential,
 	revokeCredential,
 	rotateCredential,
 } from "./db/accounts.js";
+import { CLOUD_QUOTA_BYTES } from "./db/schema.js";
+import {
+	createDownload,
+	createMachineRemote,
+	deleteAccountData,
+	finalizeUpload,
+	reserveUpload,
+	type StorageBindings,
+	StorageError,
+} from "./storage/broker.js";
+import { INDEX_OBJECT_KEY, isLogicalObjectKey } from "./storage/object-key.js";
 
-interface CloudBindings extends Env {
-	ACCESS_TOKEN_SECRET: string;
-}
+type CloudBindings = Env & StorageBindings & { ACCESS_TOKEN_SECRET: string };
 
 interface CloudVariables {
 	principal: AccessPrincipal;
@@ -30,6 +38,35 @@ type CloudHono = { Bindings: CloudBindings; Variables: CloudVariables };
 
 const exchangeSchema = z.strictObject({ githubAccessToken: z.string().min(1) });
 const refreshSchema = z.strictObject({ refreshToken: z.string().min(1) });
+const machineSchema = z.strictObject({});
+const machineRemoteIdSchema = z.string().regex(/^[A-Za-z0-9_-]{24}$/u);
+const logicalObjectKeySchema = z.string().refine(isLogicalObjectKey);
+const reservationSchema = z
+	.strictObject({
+		checksumSha256: z.string().regex(/^[A-Za-z0-9+/]{43}=$/u),
+		expectedBytes: z.number().int().positive().safe().max(CLOUD_QUOTA_BYTES),
+		expectedIndexEtag: z
+			.string()
+			.regex(/^[A-Za-z0-9-]{1,128}$/u)
+			.nullable()
+			.optional(),
+		idempotencyKey: z.string().min(1).max(128),
+		logicalObjectKey: logicalObjectKeySchema,
+		machineRemoteId: machineRemoteIdSchema,
+	})
+	.superRefine((value, context) => {
+		if (value.logicalObjectKey === INDEX_OBJECT_KEY && value.expectedIndexEtag === undefined) {
+			context.addIssue({ code: "custom", message: "expectedIndexEtag is required for the index" });
+		}
+		if (value.logicalObjectKey !== INDEX_OBJECT_KEY && value.expectedIndexEtag !== undefined) {
+			context.addIssue({ code: "custom", message: "expectedIndexEtag is only valid for the index" });
+		}
+	});
+const downloadSchema = z.strictObject({
+	logicalObjectKey: logicalObjectKeySchema,
+	machineRemoteId: machineRemoteIdSchema,
+});
+const reservationIdSchema = z.uuid();
 
 class ApiError extends Error {
 	constructor(
@@ -99,7 +136,6 @@ async function tokenResponse(
 		accessTokenExpiresAt: timestamp(accessToken.expiresAt),
 		account: {
 			id: credential.account.id,
-			plan: credential.account.plan,
 			quotaBytes: credential.account.quotaBytes,
 			reservedBytes: credential.account.reservedBytes,
 			usedBytes: credential.account.usedBytes,
@@ -114,9 +150,9 @@ async function tokenResponse(
 export function createApp() {
 	const app = new Hono<CloudHono>();
 
-	app.use("/v1/auth/*", async (context, next) => {
-		await next();
+	app.use("/v1/*", async (context, next) => {
 		context.header("Cache-Control", "no-store");
+		await next();
 	});
 
 	app.get("/healthz", (context) => context.json({ ok: true }));
@@ -153,14 +189,61 @@ export function createApp() {
 		return context.body(null, 204);
 	});
 
+	app.post("/v1/machines", authMiddleware(), async (context) => {
+		await readJson(context.req.raw, machineSchema);
+		const id = await createMachineRemote(context.env.DB, context.get("principal").userId, now());
+		return context.json({ id }, 201);
+	});
+
+	app.post("/v1/uploads/reservations", authMiddleware(), async (context) => {
+		const input = await readJson(context.req.raw, reservationSchema);
+		const { expectedIndexEtag, ...requiredInput } = input;
+		const result = await reserveUpload(
+			context.env,
+			context.get("principal").userId,
+			expectedIndexEtag === undefined ? requiredInput : { ...requiredInput, expectedIndexEtag },
+			now(),
+		);
+		const body =
+			result.state === "pending"
+				? {
+						reservationId: result.reservationId,
+						state: result.state,
+						upload: { ...result.upload, expiresAt: timestamp(result.upload.expiresAt) },
+					}
+				: result;
+		return context.json(body, result.created ? 201 : 200);
+	});
+
+	app.post("/v1/uploads/:reservationId/finalize", authMiddleware(), async (context) => {
+		const parsed = reservationIdSchema.safeParse(context.req.param("reservationId"));
+		if (!parsed.success) {
+			throw new ApiError(400, "invalid_request");
+		}
+		const result = await finalizeUpload(context.env, context.get("principal").userId, parsed.data, now());
+		return context.json(result);
+	});
+
+	app.post("/v1/downloads", authMiddleware(), async (context) => {
+		const input = await readJson(context.req.raw, downloadSchema);
+		const download = await createDownload(
+			context.env,
+			context.get("principal").userId,
+			input.machineRemoteId,
+			input.logicalObjectKey,
+			now(),
+		);
+		return context.json({ ...download, expiresAt: timestamp(download.expiresAt) });
+	});
+
 	app.delete("/v1/account", authMiddleware(), async (context) => {
-		await deleteAccount(context.env.DB, context.get("principal").userId);
+		await deleteAccountData(context.env, context.get("principal").userId);
 		return context.body(null, 204);
 	});
 
 	app.notFound((context) => context.json({ error: "not_found" }, 404));
 	app.onError((error, context) => {
-		if (error instanceof ApiError) {
+		if (error instanceof ApiError || error instanceof StorageError) {
 			return context.json({ error: error.code }, error.status);
 		}
 		return context.json({ error: "internal_error" }, 500);

@@ -1,24 +1,48 @@
-# Packbat Cloud account service
+# Packbat Cloud service
 
-Cloudflare Worker account boundary for optional Packbat Cloud. It verifies a one-time GitHub token, stores only the
-GitHub numeric subject, and returns Packbat access and rotating refresh credentials. Browser OAuth is not part of
-this service.
+Cloudflare Worker for optional Packbat Cloud. It owns the minimized account boundary plus a private R2 ciphertext
+broker. Archive bytes transfer directly through short-lived, exact-object presigned URLs; the Worker retains quota,
+ordering, finalization, and deletion authority. Browser OAuth is not part of this service.
 
 ## Local development
 
-Create `apps/cloud/.dev.vars` with a random `ACCESS_TOKEN_SECRET` of at least 32 bytes, then run:
+Create `apps/cloud/.dev.vars` with the following values, then run:
+
+```text
+ACCESS_TOKEN_SECRET=<random value of at least 32 bytes>
+R2_ACCOUNT_ID=<Cloudflare account ID>
+R2_ACCESS_KEY_ID=<bucket-scoped object read/write key>
+R2_SECRET_ACCESS_KEY=<matching secret>
+R2_BUCKET_NAME=packbat-cloud-archives
+```
 
 ```sh
 pnpm -C apps/cloud db:migrate:local
 pnpm -C apps/cloud dev
 ```
 
-`wrangler.jsonc` deliberately contains a zero D1 ID for local work. The R2 broker ticket provisions the remote D1,
-private R2 bucket, and deployed Worker before replacing that placeholder.
+`wrangler.jsonc` contains a zero D1 ID until the production database is provisioned. Production setup creates the
+private `packbat-cloud-archives` R2 Standard bucket, replaces that ID, adds the real `R2_ACCOUNT_ID` as a Worker
+variable, applies the D1 migrations, stores `ACCESS_TOKEN_SECRET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`
+with `wrangler secret put`, and then deploys the Worker. The R2 API key must be scoped to object read/write access
+on that bucket only; `R2_BUCKET_NAME` is the private bucket's configured name.
+
+Before deployment, run the live hard-quota proof with the same bucket-scoped R2 credentials:
+
+```sh
+pnpm -C apps/cloud proof:r2-length
+```
+
+It signs a five-byte PUT, tries changed, shorter, and longer bodies through a raw HTTP client, verifies R2 never
+stores more than the signed length, and removes every synthetic proof object.
 
 ## API
 
 - `POST /v1/auth/github/exchange` verifies a GitHub access token through `/user` and issues Packbat credentials.
 - `POST /v1/auth/refresh` rotates a refresh token. Each refresh token works once.
 - `DELETE /v1/auth/credential` revokes the authenticated CLI credential.
-- `DELETE /v1/account` deletes the account and all current D1 control-plane state.
+- `POST /v1/machines` registers an opaque remote machine namespace.
+- `POST /v1/uploads/reservations` atomically reserves quota and returns exact-object upload authority.
+- `POST /v1/uploads/:reservationId/finalize` verifies R2 length and SHA-256 before publishing the ledger entry.
+- `POST /v1/downloads` returns short-lived read authority for a committed ciphertext object.
+- `DELETE /v1/account` removes the account's complete R2 prefix before deleting its D1 rows.

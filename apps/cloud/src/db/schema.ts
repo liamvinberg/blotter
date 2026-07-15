@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { check, foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
-export const FREE_QUOTA_BYTES = 10_000_000_000;
+export const CLOUD_QUOTA_BYTES = 100_000_000_000;
 
 export const users = sqliteTable(
 	"users",
@@ -9,7 +9,6 @@ export const users = sqliteTable(
 		id: text("id").primaryKey(),
 		githubSubjectId: text("github_subject_id").notNull(),
 		createdAt: integer("created_at").notNull(),
-		plan: text("plan", { enum: ["free", "paid"] }).notNull(),
 		quotaBytes: integer("quota_bytes").notNull(),
 		usedBytes: integer("used_bytes").notNull(),
 		reservedBytes: integer("reserved_bytes").notNull(),
@@ -22,7 +21,6 @@ export const users = sqliteTable(
 			"users_github_subject_id_numeric",
 			sql`${table.githubSubjectId} <> '' AND ${table.githubSubjectId} NOT GLOB '*[^0-9]*'`,
 		),
-		check("users_plan_valid", sql`${table.plan} IN ('free', 'paid')`),
 		check("users_quota_bytes_nonnegative", sql`${table.quotaBytes} >= 0`),
 		check("users_used_bytes_nonnegative", sql`${table.usedBytes} >= 0`),
 		check("users_reserved_bytes_nonnegative", sql`${table.reservedBytes} >= 0`),
@@ -100,8 +98,10 @@ export const uploadReservations = sqliteTable(
 		machineRemoteId: text("machine_remote_id").notNull(),
 		logicalObjectKey: text("logical_object_key").notNull(),
 		expectedBytes: integer("expected_bytes").notNull(),
-		checksum: text("checksum").notNull(),
+		checksumSha256: text("checksum_sha256").notNull(),
 		replacedBytes: integer("replaced_bytes").notNull(),
+		replacedEtag: text("replaced_etag"),
+		expectedIndexEtag: text("expected_index_etag"),
 		idempotencyKey: text("idempotency_key").notNull(),
 		createdAt: integer("created_at").notNull(),
 		expiresAt: integer("expires_at").notNull(),
@@ -109,6 +109,9 @@ export const uploadReservations = sqliteTable(
 	},
 	(table) => [
 		uniqueIndex("upload_reservations_user_id_idempotency_key_unique").on(table.userId, table.idempotencyKey),
+		uniqueIndex("upload_reservations_pending_object_unique")
+			.on(table.userId, table.machineRemoteId, table.logicalObjectKey)
+			.where(sql`${table.state} = 'pending'`),
 		index("upload_reservations_expiry_index").on(table.state, table.expiresAt),
 		foreignKey({
 			columns: [table.userId, table.machineRemoteId],

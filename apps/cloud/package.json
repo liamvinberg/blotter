@@ -9,11 +9,13 @@
 		"db:migrate:local": "wrangler d1 migrations apply DB --local",
 		"db:migrate:remote": "wrangler d1 migrations apply DB --remote",
 		"dev": "wrangler dev",
+		"proof:r2-length": "node scripts/prove-r2-content-length.mjs",
 		"test": "vitest run",
 		"typecheck": "tsc",
 		"types:worker": "wrangler types"
 	},
 	"dependencies": {
+		"aws4fetch": "^1.0.20",
 		"drizzle-orm": "^0.45.2",
 		"hono": "^4.12.30",
 		"zod": "^4.4.3"

@@ -51,8 +51,10 @@ CREATE TABLE `upload_reservations` (
 	`machine_remote_id` text NOT NULL,
 	`logical_object_key` text NOT NULL,
 	`expected_bytes` integer NOT NULL,
-	`checksum` text NOT NULL,
+	`checksum_sha256` text NOT NULL,
 	`replaced_bytes` integer NOT NULL,
+	`replaced_etag` text,
+	`expected_index_etag` text,
 	`idempotency_key` text NOT NULL,
 	`created_at` integer NOT NULL,
 	`expires_at` integer NOT NULL,
@@ -66,18 +68,17 @@ CREATE TABLE `upload_reservations` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `upload_reservations_user_id_idempotency_key_unique` ON `upload_reservations` (`user_id`,`idempotency_key`);--> statement-breakpoint
+CREATE UNIQUE INDEX `upload_reservations_pending_object_unique` ON `upload_reservations` (`user_id`,`machine_remote_id`,`logical_object_key`) WHERE "upload_reservations"."state" = 'pending';--> statement-breakpoint
 CREATE INDEX `upload_reservations_expiry_index` ON `upload_reservations` (`state`,`expires_at`);--> statement-breakpoint
 CREATE TABLE `users` (
 	`id` text PRIMARY KEY NOT NULL,
 	`github_subject_id` text NOT NULL,
 	`created_at` integer NOT NULL,
-	`plan` text NOT NULL,
 	`quota_bytes` integer NOT NULL,
 	`used_bytes` integer NOT NULL,
 	`reserved_bytes` integer NOT NULL,
 	`storage_prefix` text NOT NULL,
 	CONSTRAINT "users_github_subject_id_numeric" CHECK("users"."github_subject_id" <> '' AND "users"."github_subject_id" NOT GLOB '*[^0-9]*'),
-	CONSTRAINT "users_plan_valid" CHECK("users"."plan" IN ('free', 'paid')),
 	CONSTRAINT "users_quota_bytes_nonnegative" CHECK("users"."quota_bytes" >= 0),
 	CONSTRAINT "users_used_bytes_nonnegative" CHECK("users"."used_bytes" >= 0),
 	CONSTRAINT "users_reserved_bytes_nonnegative" CHECK("users"."reserved_bytes" >= 0)

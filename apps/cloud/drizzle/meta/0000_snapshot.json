@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "bc3ef6d2-35f0-4040-bd7d-e3c4da4f8395",
+  "id": "fde85f0a-522d-4575-ae56-32b563bb3296",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "billing_customers": {
@@ -361,8 +361,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "checksum": {
-          "name": "checksum",
+        "checksum_sha256": {
+          "name": "checksum_sha256",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -373,6 +373,20 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "replaced_etag": {
+          "name": "replaced_etag",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "expected_index_etag": {
+          "name": "expected_index_etag",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "idempotency_key": {
@@ -412,6 +426,16 @@
             "idempotency_key"
           ],
           "isUnique": true
+        },
+        "upload_reservations_pending_object_unique": {
+          "name": "upload_reservations_pending_object_unique",
+          "columns": [
+            "user_id",
+            "machine_remote_id",
+            "logical_object_key"
+          ],
+          "isUnique": true,
+          "where": "\"upload_reservations\".\"state\" = 'pending'"
         },
         "upload_reservations_expiry_index": {
           "name": "upload_reservations_expiry_index",
@@ -497,13 +521,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "plan": {
-          "name": "plan",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "quota_bytes": {
           "name": "quota_bytes",
           "type": "integer",
@@ -556,10 +573,6 @@
         "users_github_subject_id_numeric": {
           "name": "users_github_subject_id_numeric",
           "value": "\"users\".\"github_subject_id\" <> '' AND \"users\".\"github_subject_id\" NOT GLOB '*[^0-9]*'"
-        },
-        "users_plan_valid": {
-          "name": "users_plan_valid",
-          "value": "\"users\".\"plan\" IN ('free', 'paid')"
         },
         "users_quota_bytes_nonnegative": {
           "name": "users_quota_bytes_nonnegative",

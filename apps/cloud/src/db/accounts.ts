@@ -7,11 +7,10 @@ import {
 	type RefreshToken,
 } from "../auth/tokens.js";
 import { base64Url } from "../base64-url.js";
-import { cliCredentials, FREE_QUOTA_BYTES, users } from "./schema.js";
+import { CLOUD_QUOTA_BYTES, cliCredentials, users } from "./schema.js";
 
 export interface Account {
 	id: string;
-	plan: "free" | "paid";
 	quotaBytes: number;
 	reservedBytes: number;
 	usedBytes: number;
@@ -30,7 +29,6 @@ function randomStoragePrefix(): string {
 function toAccount(user: typeof users.$inferSelect): Account {
 	return {
 		id: user.id,
-		plan: user.plan,
 		quotaBytes: user.quotaBytes,
 		reservedBytes: user.reservedBytes,
 		usedBytes: user.usedBytes,
@@ -45,8 +43,7 @@ export async function findOrCreateAccount(binding: D1Database, githubSubjectId: 
 			id: crypto.randomUUID(),
 			githubSubjectId,
 			createdAt: now,
-			plan: "free",
-			quotaBytes: FREE_QUOTA_BYTES,
+			quotaBytes: CLOUD_QUOTA_BYTES,
 			usedBytes: 0,
 			reservedBytes: 0,
 			storagePrefix: randomStoragePrefix(),
@@ -131,8 +128,4 @@ export async function revokeCredential(binding: D1Database, principal: AccessPri
 		.update(cliCredentials)
 		.set({ revokedAt: now })
 		.where(and(eq(cliCredentials.id, principal.credentialId), eq(cliCredentials.userId, principal.userId)));
-}
-
-export async function deleteAccount(binding: D1Database, userId: string): Promise<void> {
-	await drizzle(binding).delete(users).where(eq(users.id, userId));
 }

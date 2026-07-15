@@ -7,7 +7,6 @@ interface TokenResponse {
 	account: {
 		githubLogin?: string;
 		id: string;
-		plan: "free" | "paid";
 		quotaBytes: number;
 		reservedBytes: number;
 		usedBytes: number;
@@ -59,8 +58,7 @@ describe("GitHub exchange", () => {
 		expect(first).toMatchObject({
 			account: {
 				githubLogin: "octocat",
-				plan: "free",
-				quotaBytes: 10_000_000_000,
+				quotaBytes: 100_000_000_000,
 				reservedBytes: 0,
 				usedBytes: 0,
 			},
@@ -69,7 +67,8 @@ describe("GitHub exchange", () => {
 		expect(first.refreshToken).toMatch(/^pb_refresh_[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/u);
 
 		const user = await env.DB.prepare("SELECT * FROM users").first<Record<string, unknown>>();
-		expect(user).toMatchObject({ github_subject_id: "42424", id: first.account.id, plan: "free" });
+		expect(user).toMatchObject({ github_subject_id: "42424", id: first.account.id, quota_bytes: 100_000_000_000 });
+		expect(user).not.toHaveProperty("plan");
 		const storedState = JSON.stringify(
 			await env.DB.prepare("SELECT users.*, cli_credentials.* FROM users JOIN cli_credentials").all(),
 		);
@@ -157,8 +156,12 @@ describe("account deletion", () => {
 		const userId = linked.account.id;
 		const remoteId = crypto.randomUUID();
 		const currentTime = Math.floor(Date.now() / 1_000);
+		const account = await env.DB.prepare("SELECT storage_prefix FROM users WHERE id = ?")
+			.bind(userId)
+			.first<{ storage_prefix: string }>();
+		expect(account).not.toBeNull();
 		await env.DB.batch([
-			env.DB.prepare("UPDATE users SET plan = 'paid' WHERE id = ?").bind(userId),
+			env.DB.prepare("UPDATE users SET reserved_bytes = 100 WHERE id = ?").bind(userId),
 			env.DB.prepare("INSERT INTO machine_remotes (id, user_id, created_at) VALUES (?, ?, ?)").bind(
 				remoteId,
 				userId,
@@ -168,7 +171,7 @@ describe("account deletion", () => {
 				"INSERT INTO object_ledger (user_id, machine_remote_id, logical_object_key, bytes, etag, last_completed_at) VALUES (?, ?, ?, ?, ?, ?)",
 			).bind(userId, remoteId, "archive.age", 100, "etag", currentTime),
 			env.DB.prepare(
-				"INSERT INTO upload_reservations (id, user_id, machine_remote_id, logical_object_key, expected_bytes, checksum, replaced_bytes, idempotency_key, created_at, expires_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO upload_reservations (id, user_id, machine_remote_id, logical_object_key, expected_bytes, checksum_sha256, replaced_bytes, idempotency_key, created_at, expires_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			).bind(
 				crypto.randomUUID(),
 				userId,
@@ -185,6 +188,11 @@ describe("account deletion", () => {
 			env.DB.prepare(
 				"INSERT INTO billing_customers (user_id, provider, provider_customer_id, created_at) VALUES (?, 'stripe', ?, ?)",
 			).bind(userId, "cus_test", currentTime),
+		]);
+		const prefix = `users/${account?.storage_prefix}/`;
+		await Promise.all([
+			env.ARCHIVE_BUCKET.put(`${prefix}machines/${remoteId}/archive.age`, new Uint8Array([1])),
+			env.ARCHIVE_BUCKET.put(`${prefix}unledgered-ciphertext.age`, new Uint8Array([2])),
 		]);
 
 		const response = await exports.default.fetch("https://api.packbat.dev/v1/account", {
@@ -204,5 +212,6 @@ describe("account deletion", () => {
 			const count = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first<{ count: number }>();
 			expect(count?.count, table).toBe(0);
 		}
+		expect((await env.ARCHIVE_BUCKET.list({ prefix })).objects).toEqual([]);
 	});
 });
