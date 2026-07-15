@@ -91,8 +91,8 @@ describe("GitHub exchange", () => {
 
 		expect(second.account.id).toBe(first.account.id);
 		expect(second.refreshToken).not.toBe(first.refreshToken);
-		const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM cli_credentials").first<{ count: number }>();
-		expect(count?.count).toBe(2);
+		expect((await refresh(first.refreshToken)).status).toBe(200);
+		expect((await refresh(second.refreshToken)).status).toBe(200);
 	});
 
 	it("rejects a provider token GitHub does not validate", async () => {
