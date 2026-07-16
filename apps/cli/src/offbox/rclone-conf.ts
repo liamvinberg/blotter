@@ -14,6 +14,19 @@ export interface SftpRemoteInput {
 	keyFile?: string;
 }
 
+export interface DropboxToken {
+	access_token: string;
+	token_type: string;
+	refresh_token: string;
+	expiry: string;
+	expires_in: number;
+}
+
+export interface DropboxRemoteInput {
+	appKey: string;
+	token: DropboxToken;
+}
+
 function renderRemote(lines: string[]): string {
 	return `${lines.join("\n")}\n`;
 }
@@ -45,6 +58,18 @@ export function renderSftpRemote(input: SftpRemoteInput, remoteName = managedRcl
 		`user = ${input.user}`,
 		...(input.port === undefined ? [] : [`port = ${input.port}`]),
 		...(input.keyFile === undefined ? [] : [`key_file = ${input.keyFile}`]),
+	]);
+}
+
+export function renderDropboxRemote(input: DropboxRemoteInput, remoteName = managedRcloneRemoteName(0)): string {
+	if (!/^[A-Za-z0-9_-]+$/u.test(input.appKey)) {
+		throw new Error("Dropbox app key is invalid");
+	}
+	return renderRemote([
+		`[${remoteName}]`,
+		"type = dropbox",
+		`client_id = ${input.appKey}`,
+		`token = ${JSON.stringify(input.token)}`,
 	]);
 }
 

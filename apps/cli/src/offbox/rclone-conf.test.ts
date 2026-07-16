@@ -1,5 +1,6 @@
+import { randomBytes } from "node:crypto";
 import { describe, expect, test } from "vitest";
-import { managedRcloneRemoteName, renderS3Remote, renderSftpRemote } from "./rclone-conf.js";
+import { managedRcloneRemoteName, renderDropboxRemote, renderS3Remote, renderSftpRemote } from "./rclone-conf.js";
 
 describe("managed rclone configuration", () => {
 	test("keeps the original section and numbers additional managed remotes", () => {
@@ -66,5 +67,25 @@ type = sftp
 host = archive.example.com
 user = backup
 `);
+	});
+
+	test("renders a Dropbox public client with its refreshable token and no app secret", () => {
+		const accessToken = randomBytes(24).toString("base64url");
+		const refreshToken = randomBytes(24).toString("base64url");
+		const rendered = renderDropboxRemote({
+			appKey: "public-app-key",
+			token: {
+				access_token: accessToken,
+				token_type: "bearer",
+				refresh_token: refreshToken,
+				expiry: "2026-07-16T12:00:00.000Z",
+				expires_in: 14_400,
+			},
+		});
+
+		expect(rendered).toContain("[packbat]\ntype = dropbox\nclient_id = public-app-key\n");
+		expect(rendered).toContain(`"access_token":"${accessToken}"`);
+		expect(rendered).toContain(`"refresh_token":"${refreshToken}"`);
+		expect(rendered).not.toContain("client_secret");
 	});
 });

@@ -1,19 +1,19 @@
 # OAuth destinations
 
-Research date: 2026-07-14. Live validation: 2026-07-15. Dropbox authorization ruling: 2026-07-16. Console labels and
-provider policy are current as of those dates. Credential and token material is deliberately excluded from this
-artifact.
+Research date: 2026-07-14. Live validation: 2026-07-15 and 2026-07-16. Dropbox authorization ruling: 2026-07-16.
+Console labels and provider policy are current as of those dates. Credential and token material is deliberately
+excluded from this artifact.
 
 ## Recommendation
 
 | Provider | Verdict | Why | Release boundary |
 | --- | --- | --- | --- |
 | Google Drive | **Go, conditional on the scheduled durability gate** | The live Desktop client requested only `drive.file`; an In-production grant completed publish, restore, and forced refresh through Packbat's managed rclone config. | Do not merge the public wizard lane until the same 2026-07-15 grant passes the scheduled July 23 refresh/restore probe and its follow-up revoke/reauthorize check. Publish verified branding before public onboarding. |
-| Dropbox | **Functional go; public release blocked by PKCE** | The App Folder boundary and authorization lifecycle passed live, but Dropbox API support said an app that cannot secure its secret must use PKCE without the secret. | Do not ship stock rclone's secret-based authorization flow. Implement and live-validate S256 PKCE with offline refresh tokens and no `client_secret`, then apply for production approval. |
+| Dropbox | **Go for the wizard; production approval remains** | Packbat's no-secret S256 PKCE client completed the full App Folder lifecycle, including rclone refresh, revocation, reauthorization, and retained-data restore. | Integrate the proven client into the destination wizard, then apply for production approval before the linked-user deadline. Never ship stock rclone's secret-based authorization flow. |
 
 Both provider backends work functionally, but neither public wizard lane is ready. Google waits on its real-time
-durability gate and branding. Dropbox waits on a PKCE-capable authorization flow and live validation of that exact
-flow.
+durability gate and branding. Dropbox's authorization gate is closed; its remaining release work is wizard integration
+and the normal production application.
 
 ## Live validation status
 
@@ -25,11 +25,11 @@ is recorded in this document.
 | Provider | Current verdict | Live evidence | Remaining gate |
 | --- | --- | --- | --- |
 | Google Drive | **Functional go; durability pending** | External app published **In production**; Desktop client; only `drive.file`; consent matched that scope; three synthetic archives plus one index round-tripped byte-for-byte; forced access-token expiry refreshed successfully. | The exact grant is scheduled to repeat refresh/restore on 2026-07-23 at 18:00 Europe/Stockholm. Revoke and reauthorize after that pass. Brand verification remains a public-onboarding gate. |
-| Dropbox | **Secret-based spike passed; shipped shape pending** | App Folder app; documented minimum scopes; `http://localhost:53682/` redirect; consent was confined to `/Apps/packbat-oauth-spike-liam`; the synthetic round-trip and forced refresh passed; UI revocation produced rclone `invalid_grant` and exit `1`; reauthorization restored the original remote bytes without moving or deleting data. | Repeat the authorization lifecycle with S256 PKCE, offline refresh tokens, and no app secret before the public wizard ships. |
+| Dropbox | **No-secret PKCE flow passed** | App Folder app; documented minimum scopes; registered loopback redirect; S256 PKCE with offline access and no app secret; three synthetic archives plus one index round-tripped byte-for-byte; forced expiry refreshed through rclone; provider revocation produced `invalid_grant` and exit `1`; reauthorization restored the retained bytes. | Consume the proven client in the wizard, then complete the normal production application. |
 
-The live scripts ran as `packbat-drive-spike` and `packbat-dropbox-spike`. Both used the exact invocations in this
-document through the scratch config. Google intentionally skipped revocation so the same grant can establish the
-seven-day result.
+The 2026-07-15 live scripts ran as `packbat-drive-spike` and `packbat-dropbox-spike`. Google intentionally skipped
+revocation so the same grant can establish the seven-day result. The 2026-07-16 Dropbox run used Packbat's shipped
+authorization seam and a `packbat-dropbox-pkce-proof` rclone remote; its redacted evidence is recorded below.
 
 ## Google Drive registration runbook
 
@@ -163,10 +163,57 @@ exchange carries the App key and in-memory `code_verifier`, not `client_secret`.
 token only in its mode-`0600` managed rclone config. Stock rclone `v1.74.4` cannot perform that exchange, so its direct
 Dropbox authorization commands are disqualified for the public wizard.
 
-Packbat will own the Dropbox PKCE browser and token exchange, then inject the token into stock rclone. Rclone remains
-the data plane and token refresher. Waiting for an unplanned upstream rclone change is not a release path, and Packbat
-will not carry both authorization paths. The Packbat-owned flow must be live-validated without an app secret before
-this gate closes.
+Packbat owns the Dropbox PKCE browser and token exchange, then injects the token into stock rclone. Rclone remains the
+data plane and token refresher. Waiting for an unplanned upstream rclone change is not a release path, and Packbat will
+not carry both authorization paths. The 2026-07-16 live proof closed this gate without an app secret.
+
+### Shipped PKCE and rclone handoff
+
+[`authorizeDropboxRemote`](../../apps/cli/src/offbox/dropbox-oauth.ts) owns the complete authorization boundary:
+
+1. Generate a 64-byte random verifier, base64url-encode it to 86 RFC 7636 characters, derive the S256 challenge, and
+   generate a separate 32-byte random `state`. The verifier and state exist only in process memory.
+2. Bind a loopback-only listener to the registered redirect before opening the system browser. Request
+   `response_type=code`, `token_access_type=offline`, the public App key, the redirect, `state`, the challenge, and
+   `code_challenge_method=S256`. A callback with the wrong state receives HTTP 400 and cannot complete the flow.
+3. Exchange the accepted code using `grant_type=authorization_code`, the public App key, the same redirect, and the
+   in-memory `code_verifier`. The request has no `client_secret`. Provider response bodies are never included in an
+   error.
+4. Convert the successful Dropbox response into rclone's refreshable token shape in memory. Pass that object directly
+   to [`renderDropboxRemote`](../../apps/cli/src/offbox/rclone-conf.ts), then atomically write the managed config at
+   mode `0600`.
+
+The handoff does not invoke `rclone config`, put token JSON in an argument or environment variable, or maintain a
+second authorization path. Rclone first sees the grant when it reads Packbat's managed config for a data-plane command:
+
+```ini
+[packbat]
+type = dropbox
+client_id = <public App key>
+token = <in-memory token JSON serialized directly to this mode-0600 file>
+```
+
+There is deliberately no `client_secret`. Authorization URLs, state, verifier, code, token JSON, and refresh tokens
+never enter Packbat output, errors, fixtures, or the recovery kit. The process-boundary test drives the real loopback
+listener and HTTP exchange against a local provider, rejects a mismatched state, verifies the challenge from the
+received verifier, and asserts only the private config file plus redacted process output.
+
+Redacted live evidence from 2026-07-16, against `packbat-oauth-spike-liam` with rclone `v1.74.4`:
+
+- S256 PKCE authorization received only the public App key, requested offline access, and never sent or wrote an app
+  secret.
+- Packbat wrote the managed rclone config at mode `0600`; its Dropbox section contained the public App key and token,
+  with no `client_secret` field.
+- Three synthetic ciphertext-shaped archives plus one encrypted-index-shaped file published and restored
+  byte-for-byte.
+- A forced cached-access expiry made rclone refresh the PKCE grant and rewrite a future expiry while retaining the
+  refresh token.
+- Dropbox's revoke endpoint invalidated the grant. After another forced expiry, rclone failed refresh with
+  `invalid_grant` and exit `1`.
+- A fresh Packbat PKCE authorization restored the original retained remote bytes without moving or deleting them.
+
+The proof completed at `2026-07-16T09:59:23.507Z`; its remote root was
+`packbat-dropbox-pkce-proof:packbat-pkce-proof/20260716T095705Z`. No credential or token material was recorded.
 
 ## Rclone invocations for the wizard
 
@@ -268,8 +315,8 @@ also validated with fake IDs and interrupted at the loopback listener, are:
 
 `rclone authorize` accepts a backend plus either the emitted base64 blob or a client-ID/client-secret pair;
 `--auth-no-open-browser` prints rather than automatically opening its local link
-([rclone: `authorize`](https://rclone.org/commands/rclone_authorize/)). When the wizard receives the returned token JSON,
-it can finish without another question:
+([rclone: `authorize`](https://rclone.org/commands/rclone_authorize/)). The Drive wizard can finish from its returned
+token without another question:
 
 ```sh
 "$RCLONE" config create packbat-drive drive \
@@ -283,21 +330,10 @@ it can finish without another question:
   --non-interactive \
   --no-output \
   --config "$RCLONE_CONFIG"
-
-"$RCLONE" config create packbat-dropbox dropbox \
-  client_id "$DROPBOX_APP_KEY" \
-  token "$OAUTH_TOKEN_JSON" \
-  config_refresh_token false \
-  --non-interactive \
-  --no-output \
-  --config "$RCLONE_CONFIG"
 ```
 
-The Dropbox token-injection shape above is valid only when `OAUTH_TOKEN_JSON` came from Packbat's S256 PKCE exchange.
-It deliberately omits `client_secret`; live validation still owns proof that rclone refreshes that grant using only the
-App key and refresh token. The earlier fake-token dry runs ended with an empty rclone configuration state. In
-production, pass the token through a pipe or protected in-memory value rather than a normal environment variable, and
-unset it immediately afterward.
+Dropbox does not use this command path. Packbat's S256 PKCE exchange passes its token object directly to the managed
+config renderer described above, so the token never appears in a process argument, pipe, or environment variable.
 
 The wizard must redact any Google client secret, base64 blob, authorization URL state, returned token JSON, and config
 contents from logs. A Dropbox app secret must never enter the shipped flow. The recovery kit must never include any of
@@ -373,17 +409,16 @@ the observed `invalid_grant` classifier instead of depending on cached-token tim
 
 ### Live lifecycle observations
 
-The 2026-07-15 live runs resolved the immediate behavior:
+The 2026-07-15 and 2026-07-16 live runs resolved the immediate behavior:
 
 - Google Drive: forcing the cached access-token expiry caused rclone to refresh the token, rewrite its future expiry in
   the managed config, and complete `copyto`. The grant remains active for the beyond-seven-days check, so its revoked
   error is not yet known.
-- Dropbox: the same forced-expiry probe refreshed successfully. Disconnecting the app in Dropbox while retaining its
-  App Folder, then forcing the cached expiry, made `rclone copy` exit `1`. The stable inner error was
-  `couldn't fetch token: invalid_grant: maybe token expired? - try refreshing with "rclone config reconnect packbat-dropbox-spike:"`.
-  This confirms that `invalid_grant` is a valid Dropbox reauthorization classifier for the rclone path Packbat uses.
-  Reconnecting the same remote then restored the original three archives and encrypted index byte-for-byte from the
-  retained App Folder, proving that reauthorization neither deletes nor relocates archived data.
+- Dropbox: both the rejected secret-based spike and the shipped no-secret PKCE path refreshed successfully after a
+  forced expiry. Revoking each authorization while retaining its App Folder, then forcing another expiry, made rclone
+  exit `1` with `invalid_grant`. A fresh Packbat PKCE authorization restored the original three archives and encrypted
+  index byte-for-byte from the retained App Folder, proving that reauthorization neither deletes nor relocates
+  archived data.
 
 ### Proposed doctor fact
 
