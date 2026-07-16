@@ -13,7 +13,7 @@ ACCESS_TOKEN_SECRET=<random value of at least 32 bytes>
 R2_ACCOUNT_ID=<Cloudflare account ID>
 R2_ACCESS_KEY_ID=<bucket-scoped object read/write key>
 R2_SECRET_ACCESS_KEY=<matching secret>
-R2_BUCKET_NAME=packbat-cloud-archives
+R2_BUCKET_NAME=packbat
 ```
 
 ```sh
@@ -21,8 +21,8 @@ pnpm -C apps/cloud db:migrate:local
 pnpm -C apps/cloud dev
 ```
 
-`wrangler.jsonc` contains a zero D1 ID until the production database is provisioned. Production setup creates the
-private `packbat-cloud-archives` R2 Standard bucket, replaces that ID, adds the real `R2_ACCOUNT_ID` as a Worker
+`wrangler.jsonc` contains a zero D1 ID until the production database is provisioned. Production setup uses the
+private `packbat` R2 Standard bucket, replaces that ID, adds the real `R2_ACCOUNT_ID` as a Worker
 variable, applies the D1 migrations, stores `ACCESS_TOKEN_SECRET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`
 with `wrangler secret put`, and then deploys the Worker. The R2 API key must be scoped to object read/write access
 on that bucket only; `R2_BUCKET_NAME` is the private bucket's configured name.

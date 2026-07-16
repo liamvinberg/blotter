@@ -4,7 +4,7 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-07-15",
 	"vars": {
-		"R2_BUCKET_NAME": "packbat-cloud-archives"
+		"R2_BUCKET_NAME": "packbat"
 	},
 	"triggers": {
 		"crons": ["*/5 * * * *"]
@@ -20,7 +20,7 @@
 	"r2_buckets": [
 		{
 			"binding": "ARCHIVE_BUCKET",
-			"bucket_name": "packbat-cloud-archives"
+			"bucket_name": "packbat"
 		}
 	]
 }

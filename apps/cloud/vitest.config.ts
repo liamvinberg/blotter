@@ -13,7 +13,7 @@ export default defineConfig(async () => {
 						ACCESS_TOKEN_SECRET: "packbat-test-signing-secret-32-bytes-minimum",
 						R2_ACCESS_KEY_ID: "test-r2-access-key",
 						R2_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
-						R2_BUCKET_NAME: "packbat-cloud-archives",
+						R2_BUCKET_NAME: "packbat",
 						R2_SECRET_ACCESS_KEY: "test-r2-secret-access-key",
 						TEST_MIGRATIONS: migrations,
 					},
