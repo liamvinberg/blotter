@@ -7,7 +7,10 @@ export interface StripeBindings {
 }
 
 export class StripeRequestError extends Error {
-	constructor(readonly status: number) {
+	constructor(
+		readonly status: number,
+		readonly type: string | null,
+	) {
 		super("stripe_request_failed");
 	}
 }
@@ -32,7 +35,24 @@ export async function stripeRequest(
 		method: "POST",
 	});
 	if (!response.ok) {
-		throw new StripeRequestError(response.status);
+		let type: string | null = null;
+		try {
+			const body: unknown = await response.json();
+			if (
+				typeof body === "object" &&
+				body !== null &&
+				"error" in body &&
+				typeof body.error === "object" &&
+				body.error !== null &&
+				"type" in body.error &&
+				typeof body.error.type === "string"
+			) {
+				type = body.error.type;
+			}
+		} catch {
+			// An unreadable provider error is uncertain and retains Checkout admission.
+		}
+		throw new StripeRequestError(response.status, type);
 	}
 	return await response.json();
 }

@@ -13,10 +13,16 @@ const stripeIdSchema = z.string().regex(/^[A-Za-z]+_[A-Za-z0-9_]+$/u);
 const customerSchema = z.object({ id: stripeIdSchema });
 const sessionSchema = z.object({ id: stripeIdSchema, url: z.url() });
 
+class BillingProviderError extends BillingError {
+	constructor(readonly admissionReleaseSafe: boolean) {
+		super(502, "billing_provider_error");
+	}
+}
+
 function parseProviderResponse<T>(schema: z.ZodType<T>, value: unknown): T {
 	const parsed = schema.safeParse(value);
 	if (!parsed.success) {
-		throw new BillingError(502, "billing_provider_error");
+		throw new BillingProviderError(false);
 	}
 	return parsed.data;
 }
@@ -30,8 +36,11 @@ async function requestStripe(
 	try {
 		return await stripeRequest(env, path, parameters, idempotencyKey);
 	} catch (error) {
-		if (error instanceof StripeRequestError || error instanceof TypeError) {
-			throw new BillingError(502, "billing_provider_error");
+		if (error instanceof StripeRequestError) {
+			throw new BillingProviderError(error.status === 400 && error.type === "invalid_request_error");
+		}
+		if (error instanceof TypeError) {
+			throw new BillingProviderError(false);
 		}
 		throw error;
 	}
@@ -72,7 +81,7 @@ async function admitCheckout(
 	interval: "month" | "year",
 	idempotencyKey: string,
 	now: number,
-): Promise<number> {
+): Promise<{ acquired: boolean; expiresAt: number }> {
 	const expiresAt = now + CHECKOUT_LIFETIME_SECONDS;
 	const admission = await env.DB.prepare(
 		`INSERT INTO billing_checkout_admissions (user_id, idempotency_key, interval, created_at, expires_at)
@@ -93,7 +102,7 @@ async function admitCheckout(
 		.bind(idempotencyKey, interval, now, expiresAt, userId, now)
 		.first<{ userId: string }>();
 	if (admission !== null) {
-		return expiresAt;
+		return { acquired: true, expiresAt };
 	}
 
 	const account = await billingAccount(env.DB, userId);
@@ -115,7 +124,7 @@ async function admitCheckout(
 		existingAdmission.idempotencyKey === idempotencyKey &&
 		existingAdmission.interval === interval
 	) {
-		return existingAdmission.expiresAt;
+		return { acquired: false, expiresAt: existingAdmission.expiresAt };
 	}
 	const subscription = await env.DB.prepare(
 		"SELECT status FROM billing_subscriptions WHERE user_id = ? AND status IN ('incomplete', 'trialing', 'active')",
@@ -141,7 +150,7 @@ export async function createCheckout(
 	idempotencyKey: string,
 	now: number,
 ): Promise<{ url: string }> {
-	const expiresAt = await admitCheckout(env, userId, interval, idempotencyKey, now);
+	const admission = await admitCheckout(env, userId, interval, idempotencyKey, now);
 	try {
 		const customer = await ensureBillingCustomer(env, userId, now);
 		const priceId = interval === "month" ? env.STRIPE_MONTHLY_PRICE_ID : env.STRIPE_ANNUAL_PRICE_ID;
@@ -152,7 +161,7 @@ export async function createCheckout(
 			customer: customer.providerCustomerId,
 			"customer_update[address]": "auto",
 			"customer_update[name]": "auto",
-			expires_at: String(expiresAt),
+			expires_at: String(admission.expiresAt),
 			"line_items[0][price]": priceId,
 			"line_items[0][quantity]": "1",
 			mode: "subscription",
@@ -167,7 +176,9 @@ export async function createCheckout(
 		);
 		return { url: response.url };
 	} catch (error) {
-		await releaseCheckoutAdmission(env, userId, idempotencyKey);
+		if (admission.acquired && error instanceof BillingProviderError && error.admissionReleaseSafe) {
+			await releaseCheckoutAdmission(env, userId, idempotencyKey);
+		}
 		throw error;
 	}
 }
