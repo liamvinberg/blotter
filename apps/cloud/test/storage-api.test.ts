@@ -2,7 +2,6 @@ import { createScheduledController } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
-import { reconcileUsageAccounting } from "../src/storage/broker.js";
 import { deliverStripeEvent, subscriptionEvent } from "./helpers/stripe.js";
 
 interface LinkedAccount {
@@ -415,18 +414,43 @@ describe("ciphertext uploads", () => {
 		).toEqual({ reserved_bytes: 3, used_bytes: 0 });
 	});
 
-	it("does not erase a reservation admitted concurrently with accounting repair", async () => {
-		mockGitHubUsers({ "github-token": { id: 42_424, login: "octocat" } });
-		const linked = await exchange();
-		const machineRemoteId = await createMachine(linked.accessToken);
+	it("does not erase a reservation admitted concurrently with scheduled accounting repair", async () => {
 		const currentTime = Math.floor(Date.now() / 1_000);
-		await env.DB.prepare("UPDATE users SET used_bytes = 77, reserved_bytes = 88 WHERE id = ?")
-			.bind(linked.account.id)
+		const sentinelUserId = "accounting-sentinel";
+		const targetUserId = "accounting-target";
+		const machineRemoteId = "accounting-machine";
+		const userIds = [
+			sentinelUserId,
+			...Array.from({ length: 40 }, (_, index) => `accounting-filler-${index}`),
+			targetUserId,
+		];
+		await env.DB.batch(
+			userIds.map((userId, index) =>
+				env.DB.prepare(
+					`INSERT INTO users (
+						id, github_subject_id, created_at, quota_bytes, used_bytes, reserved_bytes, storage_prefix
+					) VALUES (?, ?, ?, ?, 77, 88, ?)`,
+				).bind(userId, String(900_000 + index), currentTime, 100, `accounting/${index}`),
+			),
+		);
+		await env.DB.prepare("INSERT INTO machine_remotes (id, user_id, created_at) VALUES (?, ?, ?)")
+			.bind(machineRemoteId, targetUserId, currentTime)
 			.run();
 
-		const reconciliation = reconcileUsageAccounting(env.DB, currentTime);
+		const scheduled = worker.scheduled(createScheduledController({ scheduledTime: Date.now() }), env);
+		for (let attempt = 0; attempt < 100; attempt += 1) {
+			const sentinel = await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?")
+				.bind(sentinelUserId)
+				.first<{ reserved_bytes: number; used_bytes: number }>();
+			if (sentinel?.used_bytes === 0 && sentinel.reserved_bytes === 0) {
+				break;
+			}
+			if (attempt === 99) {
+				throw new Error("scheduled accounting repair did not start");
+			}
+		}
 		const admission = env.DB.batch([
-			env.DB.prepare("UPDATE users SET reserved_bytes = reserved_bytes + 3 WHERE id = ?").bind(linked.account.id),
+			env.DB.prepare("UPDATE users SET reserved_bytes = reserved_bytes + 3 WHERE id = ?").bind(targetUserId),
 			env.DB.prepare(
 				`INSERT INTO upload_reservations (
 					id, user_id, machine_remote_id, logical_object_key, sweep_id, expected_bytes,
@@ -434,7 +458,7 @@ describe("ciphertext uploads", () => {
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
 			).bind(
 				crypto.randomUUID(),
-				linked.account.id,
+				targetUserId,
 				machineRemoteId,
 				"codex/concurrent-accounting.age",
 				"concurrent-accounting",
@@ -446,10 +470,10 @@ describe("ciphertext uploads", () => {
 				currentTime + 300,
 			),
 		]);
-		await Promise.all([reconciliation, admission]);
+		await Promise.all([scheduled, admission]);
 
 		expect(
-			await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?").bind(linked.account.id).first(),
+			await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?").bind(targetUserId).first(),
 		).toEqual({ reserved_bytes: 3, used_bytes: 0 });
 	});
 

@@ -209,6 +209,44 @@ describe("hosted billing", () => {
 		expect(await recovered.json()).toEqual({ url: "https://checkout.stripe.com/c/pay/recovered" });
 	});
 
+	it("re-enters Stripe only for an exact retry of the admitted Checkout", async () => {
+		const records: StripeRequestRecord[] = [];
+		installProviderFake(records);
+		const linked = await exchange();
+		const request = { idempotencyKey: "lost-checkout-response", interval: "month" as const };
+		const first = await exports.default.fetch(jsonRequest("/v1/billing/checkout", request, linked.accessToken));
+		const retry = await exports.default.fetch(jsonRequest("/v1/billing/checkout", request, linked.accessToken));
+		expect(first.status).toBe(201);
+		expect(retry.status).toBe(201);
+		expect(await retry.json()).toEqual({ url: "https://checkout.stripe.com/c/pay/packbat" });
+		const sessions = records.filter(({ path }) => path === "/v1/checkout/sessions");
+		expect(sessions).toHaveLength(2);
+		expect(sessions.map(({ headers }) => headers.get("Idempotency-Key"))).toEqual([
+			`packbat-checkout-${linked.account.id}-lost-checkout-response`,
+			`packbat-checkout-${linked.account.id}-lost-checkout-response`,
+		]);
+
+		const differentKey = await exports.default.fetch(
+			jsonRequest(
+				"/v1/billing/checkout",
+				{ idempotencyKey: "different-checkout", interval: "month" },
+				linked.accessToken,
+			),
+		);
+		const differentInterval = await exports.default.fetch(
+			jsonRequest(
+				"/v1/billing/checkout",
+				{ idempotencyKey: "lost-checkout-response", interval: "year" },
+				linked.accessToken,
+			),
+		);
+		expect(differentKey.status).toBe(409);
+		expect(await differentKey.json()).toEqual({ error: "checkout_in_progress" });
+		expect(differentInterval.status).toBe(409);
+		expect(await differentInterval.json()).toEqual({ error: "checkout_in_progress" });
+		expect(records.filter(({ path }) => path === "/v1/checkout/sessions")).toHaveLength(2);
+	});
+
 	it("keeps one current provider subscription while allowing resubscription from grace", async () => {
 		const records: StripeRequestRecord[] = [];
 		installProviderFake(records);
@@ -294,6 +332,81 @@ describe("hosted billing", () => {
 		expect(await env.DB.prepare("SELECT provider_subscription_id FROM billing_subscriptions").all()).toMatchObject({
 			results: [{ provider_subscription_id: "sub_resubscribed" }],
 		});
+		expect(await status(linked.accessToken)).toMatchObject({ graceEndsAt: null, state: "active" });
+	});
+
+	it("keeps an expired-grace account while an admitted resubscription waits for its webhook", async () => {
+		const records: StripeRequestRecord[] = [];
+		installProviderFake(records);
+		const linked = await exchange();
+		expect((await checkout(linked.accessToken)).status).toBe(201);
+		const currentTime = Math.floor(Date.now() / 1_000);
+		expect(
+			(
+				await deliverStripeEvent(
+					subscriptionEvent({
+						created: currentTime,
+						customerId: "cus_packbat",
+						eventId: "evt_guard_active",
+						status: "active",
+						subscriptionId: "sub_guard_original",
+						userId: linked.account.id,
+					}),
+					currentTime,
+				)
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await deliverStripeEvent(
+					subscriptionEvent({
+						created: currentTime + 1,
+						customerId: "cus_packbat",
+						eventId: "evt_guard_lapsed",
+						status: "canceled",
+						subscriptionId: "sub_guard_original",
+						userId: linked.account.id,
+					}),
+					currentTime,
+				)
+			).status,
+		).toBe(200);
+		const resubscribe = await exports.default.fetch(
+			jsonRequest(
+				"/v1/billing/checkout",
+				{ idempotencyKey: "guarded-resubscribe", interval: "year" },
+				linked.accessToken,
+			),
+		);
+		expect(resubscribe.status).toBe(201);
+		expect(
+			await env.DB.prepare("SELECT user_id FROM billing_checkout_admissions WHERE user_id = ?")
+				.bind(linked.account.id)
+				.first(),
+		).not.toBeNull();
+		await env.DB.prepare("UPDATE users SET grace_started_at = 0, grace_ends_at = 1 WHERE id = ?")
+			.bind(linked.account.id)
+			.run();
+
+		await worker.scheduled(createScheduledController({ scheduledTime: Date.now() }), env);
+		expect(
+			await env.DB.prepare("SELECT deletion_requested_at FROM users WHERE id = ?").bind(linked.account.id).first(),
+		).toEqual({ deletion_requested_at: null });
+		expect(
+			(
+				await deliverStripeEvent(
+					subscriptionEvent({
+						created: currentTime + 2,
+						customerId: "cus_packbat",
+						eventId: "evt_guard_reactivated",
+						status: "active",
+						subscriptionId: "sub_guard_replacement",
+						userId: linked.account.id,
+					}),
+					currentTime,
+				)
+			).status,
+		).toBe(200);
 		expect(await status(linked.accessToken)).toMatchObject({ graceEndsAt: null, state: "active" });
 	});
 
