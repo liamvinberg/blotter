@@ -1,17 +1,19 @@
 # OAuth destinations
 
-Research date: 2026-07-14. Live validation: 2026-07-15. Console labels and provider policy are current as of those
-dates. Credential and token material is deliberately excluded from this artifact.
+Research date: 2026-07-14. Live validation: 2026-07-15. Dropbox authorization ruling: 2026-07-16. Console labels and
+provider policy are current as of those dates. Credential and token material is deliberately excluded from this
+artifact.
 
 ## Recommendation
 
 | Provider | Verdict | Why | Release boundary |
 | --- | --- | --- | --- |
 | Google Drive | **Go, conditional on the scheduled durability gate** | The live Desktop client requested only `drive.file`; an In-production grant completed publish, restore, and forced refresh through Packbat's managed rclone config. | Do not merge the public wizard lane until the same 2026-07-15 grant passes the scheduled July 23 refresh/restore probe and its follow-up revoke/reauthorize check. Publish verified branding before public onboarding. |
-| Dropbox | **Go for early adopters** | The App Folder boundary, minimum rclone permissions, publish/restore, forced refresh, UI revocation, reauthorization, and retained-data restore all passed live. | Treat the bundled app secret as public client metadata, not a security boundary. Resolve PKCE or obtain Dropbox approval for rclone's current secret-based flow before the shared app reaches user 50. |
+| Dropbox | **Functional go; public release blocked by PKCE** | The App Folder boundary and authorization lifecycle passed live, but Dropbox API support said an app that cannot secure its secret must use PKCE without the secret. | Do not ship stock rclone's secret-based authorization flow. Implement and live-validate S256 PKCE with offline refresh tokens and no `client_secret`, then apply for production approval. |
 
-This resolves the provider choice for the wizard: both lanes work, but only Dropbox is lifecycle-complete today. Google
-remains blocked from implementation by a real-time durability gate, not by an unknown design decision.
+Both provider backends work functionally, but neither public wizard lane is ready. Google waits on its real-time
+durability gate and branding. Dropbox waits on a PKCE-capable authorization flow and live validation of that exact
+flow.
 
 ## Live validation status
 
@@ -23,7 +25,7 @@ is recorded in this document.
 | Provider | Current verdict | Live evidence | Remaining gate |
 | --- | --- | --- | --- |
 | Google Drive | **Functional go; durability pending** | External app published **In production**; Desktop client; only `drive.file`; consent matched that scope; three synthetic archives plus one index round-tripped byte-for-byte; forced access-token expiry refreshed successfully. | The exact grant is scheduled to repeat refresh/restore on 2026-07-23 at 18:00 Europe/Stockholm. Revoke and reauthorize after that pass. Brand verification remains a public-onboarding gate. |
-| Dropbox | **Go for functional and authorization lifecycle** | App Folder app; documented minimum scopes; `http://localhost:53682/` redirect; consent was confined to `/Apps/packbat-oauth-spike-liam`; the synthetic round-trip and forced refresh passed; UI revocation produced rclone `invalid_grant` and exit `1`; reauthorization restored the original remote bytes without moving or deleting data. | Resolve the public-client/PKCE production shape before the shared app crosses its approval threshold. |
+| Dropbox | **Secret-based spike passed; shipped shape pending** | App Folder app; documented minimum scopes; `http://localhost:53682/` redirect; consent was confined to `/Apps/packbat-oauth-spike-liam`; the synthetic round-trip and forced refresh passed; UI revocation produced rclone `invalid_grant` and exit `1`; reauthorization restored the original remote bytes without moving or deleting data. | Repeat the authorization lifecycle with S256 PKCE, offline refresh tokens, and no app secret before the public wizard ships. |
 
 The live scripts ran as `packbat-drive-spike` and `packbat-dropbox-spike`. Both used the exact invocations in this
 document through the scratch config. Google intentionally skipped revocation so the same grant can establish the
@@ -124,10 +126,10 @@ sensitive/restricted-scope or security-assessment lanes
    show the equivalent loopback listener as `http://127.0.0.1:53682/`; do not substitute that value in the App Console
    unless the installed rclone live leg proves the provider sends it as `redirect_uri`
    ([rclone: Dropbox configuration](https://rclone.org/dropbox/#configuration)).
-4. Still on **Settings**, copy the **App key** and reveal/copy the **App secret** into the project's secret-management
-   system. In rclone these are `client_id` and `client_secret`, respectively
-   ([rclone: Dropbox app credentials](https://rclone.org/dropbox/#get-your-own-dropbox-app-id)). Never place them in
-   the recovery kit, this document, a test fixture, or command output committed to the repository.
+4. Still on **Settings**, record the **App key** as Packbat's public client identifier. Packbat does not need or
+   distribute the **App secret**. Dropbox API support confirmed that an app unable to secure its secret must use PKCE
+   without the secret
+   ([Dropbox support answer](https://github.com/liamvinberg/packbat/issues/37#issuecomment-4990175044)).
 5. The new app begins in development status and initially links only its owner's account. Use **Enable additional
    users** when the live spike is ready to test another account. A development app can link at most 500 users. At 50
    linked users a two-week window starts in which the app must apply for and receive production approval; otherwise new
@@ -138,7 +140,7 @@ sensitive/restricted-scope or security-assessment lanes
 The ticket's phrase “development mode covers early adopters” is correct, but “production review opens at 50” is
 incomplete. The actionable boundary is a deadline triggered at user 50, not a 50-user development cap.
 
-### Public-client and PKCE verdict
+### Public-client and PKCE ruling
 
 Dropbox recommends PKCE whenever an application cannot keep its client secret secure and explicitly includes desktop
 and open-source applications in that category. Rclone `v1.74.4` does not implement PKCE in its shared OAuth utility:
@@ -149,11 +151,22 @@ users to register and distribute exactly an App key and App secret, and the live
 [rclone: Dropbox app credentials](https://rclone.org/dropbox/#get-your-own-dropbox-app-id),
 [rclone: OAuth exchange](https://github.com/rclone/rclone/blob/v1.74.4/lib/oauthutil/oauthutil.go#L908-L919)).
 
-The result is a functional **go for early adopters**, not a claim that an embedded secret is secret. Packbat must treat
-the shared Dropbox client secret as public metadata and keep the actual user refresh token only in its mode-`0600`
-managed config. Before user 50, either rclone must gain PKCE for this backend or Dropbox production review must accept
-the current rclone authorization shape. That approval question is a production-readiness follow-up, not a reason to
-discard the proven App Folder lane.
+Dropbox API support answered Packbat's exact question on 2026-07-16. It would not pre-approve the app's overall
+compliance from a description, but it did settle this authorization point: apps must not publicly distribute their app
+secret, and a client that cannot secure the secret must use PKCE without it
+([Dropbox support answer](https://github.com/liamvinberg/packbat/issues/37#issuecomment-4990175044)). This turns the
+documentation's earlier recommendation into a release requirement.
+
+The production flow must use S256 PKCE and offline access. The authorization request carries the public App key,
+`state`, `redirect_uri`, `token_access_type=offline`, `code_challenge`, and `code_challenge_method=S256`. The code
+exchange carries the App key and in-memory `code_verifier`, not `client_secret`. Packbat stores the returned refresh
+token only in its mode-`0600` managed rclone config. Stock rclone `v1.74.4` cannot perform that exchange, so its direct
+Dropbox authorization commands are disqualified for the public wizard.
+
+Packbat will own the Dropbox PKCE browser and token exchange, then inject the token into stock rclone. Rclone remains
+the data plane and token refresher. Waiting for an unplanned upstream rclone change is not a release path, and Packbat
+will not carry both authorization paths. The Packbat-owned flow must be live-validated without an app secret before
+this gate closes.
 
 ## Rclone invocations for the wizard
 
@@ -162,6 +175,9 @@ Rclone accepts backend options as `key value` or `key=value` pairs on `config cr
 embedding application
 ([rclone: `config create`](https://rclone.org/commands/rclone_config_create/)). The wizard's simplest lane is therefore
 a command with every material backend option supplied, followed only by the unavoidable system-browser consent.
+
+The Google commands below remain candidate wizard invocations. The Dropbox commands containing `client_secret` record
+the 2026-07-15 spike only. Dropbox rejected that shape for a public client, so those commands must not ship.
 
 The following invocations were syntax-validated against the installed rclone `v1.74.4` with fake client values and
 `--config` fixed to `.scratch/wayfinder-v2/oauth-spike/rclone.conf`. The dry runs stopped at rclone's OAuth state or
@@ -183,8 +199,8 @@ RCLONE_CONFIG="$PACKBAT_HOME/rclone.conf"
   --no-output \
   --config "$RCLONE_CONFIG"
 
-# Dropbox App Folder. App Folder access and action scopes are properties of the
-# Dropbox app, not extra rclone configuration fields.
+# Dropbox spike only. Rejected for the public wizard because it distributes the
+# app secret and does not use PKCE.
 "$RCLONE" config create packbat-dropbox dropbox \
   client_id "$DROPBOX_APP_KEY" \
   client_secret "$DROPBOX_APP_SECRET" \
@@ -222,6 +238,7 @@ continuation containing a base64 configuration blob:
   --non-interactive \
   --config "$RCLONE_CONFIG"
 
+# Dropbox spike only. Rejected for the public wizard.
 "$RCLONE" config create packbat-dropbox dropbox \
   client_id "$DROPBOX_APP_KEY" \
   client_secret "$DROPBOX_APP_SECRET" \
@@ -244,6 +261,7 @@ also validated with fake IDs and interrupted at the loopback listener, are:
   --drive-scope drive.file \
   --config "$RCLONE_CONFIG"
 
+# Dropbox spike only. Rejected for the public wizard.
 "$RCLONE" authorize dropbox "$DROPBOX_APP_KEY" "$DROPBOX_APP_SECRET" \
   --config "$RCLONE_CONFIG"
 ```
@@ -268,20 +286,22 @@ it can finish without another question:
 
 "$RCLONE" config create packbat-dropbox dropbox \
   client_id "$DROPBOX_APP_KEY" \
-  client_secret "$DROPBOX_APP_SECRET" \
   token "$OAUTH_TOKEN_JSON" \
   config_refresh_token false \
-  --obscure \
   --non-interactive \
   --no-output \
   --config "$RCLONE_CONFIG"
 ```
 
-Both token-injection dry runs ended with an empty rclone configuration state. In production, pass the token through a
-pipe or protected in-memory value rather than a normal environment variable, and unset it immediately afterward.
+The Dropbox token-injection shape above is valid only when `OAUTH_TOKEN_JSON` came from Packbat's S256 PKCE exchange.
+It deliberately omits `client_secret`; live validation still owns proof that rclone refreshes that grant using only the
+App key and refresh token. The earlier fake-token dry runs ended with an empty rclone configuration state. In
+production, pass the token through a pipe or protected in-memory value rather than a normal environment variable, and
+unset it immediately afterward.
 
-The wizard must redact the client secret, base64 blob, authorization URL state, returned token JSON, and config contents
-from logs. The recovery kit must never include any of them.
+The wizard must redact any Google client secret, base64 blob, authorization URL state, returned token JSON, and config
+contents from logs. A Dropbox app secret must never enter the shipped flow. The recovery kit must never include any of
+these values.
 
 ## Token lifecycle and doctor behavior
 
@@ -489,8 +509,12 @@ deadline, despite the nominal 500-user development maximum. That is an approval 
 1. [#36](https://github.com/liamvinberg/packbat/issues/36) owns the calendar-bound Google proof: reuse this exact grant
    after seven days, record weighted-unit deltas for unchanged and changed sweeps, then revoke, classify, reauthorize,
    and prove retained data.
-2. [#37](https://github.com/liamvinberg/packbat/issues/37) owns Dropbox production authorization: obtain acceptance of
-   rclone's current public-client shape or use a PKCE-capable flow before the approval threshold.
+2. [#37](https://github.com/liamvinberg/packbat/issues/37) resolved the Dropbox production authorization decision:
+   Dropbox requires S256 PKCE without an app secret for Packbat's public client.
+3. [#38](https://github.com/liamvinberg/packbat/issues/38) owns the implementation and live proof: build the
+   Packbat-owned PKCE exchange, inject its token into rclone, and validate the full lifecycle.
+4. [#17](https://github.com/liamvinberg/packbat/issues/17) integrates the proven flow into the destination wizard,
+   then applies for production approval before the approval threshold.
 
 ## Spike completion checklist
 
@@ -508,4 +532,6 @@ Issue #16 established the provider decision and handed the remaining release gat
    deltas remain the release task in #36.
 9. [ ] #36: confirm the In-production Google refresh token remains usable beyond seven days, then revoke and
    reauthorize. Complete brand verification before public onboarding.
-10. [ ] #37: settle Dropbox PKCE/production acceptance and apply before linked user 50 starts the two-week deadline.
+10. [x] #37: obtain Dropbox's written ruling. Public clients must use PKCE without an app secret.
+11. [ ] #38: ship and live-validate Dropbox S256 PKCE without an app secret.
+12. [ ] #17: integrate the proven flow and apply before linked user 50 starts the two-week deadline.
