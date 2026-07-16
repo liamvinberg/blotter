@@ -6,6 +6,7 @@ const RECOVERY_KIT_FORMAT = 2;
 export type RecoveryKitRemote =
 	| { type: "s3-compatible"; destination: string; endpoint: string; bucket: string; prefix?: string }
 	| { type: "sftp"; destination: string; host: string; port?: number; path: string }
+	| { type: "oauth"; provider: "google-drive" | "dropbox"; destination: string }
 	| { type: "rclone"; destination: string };
 
 export interface RecoveryKitInput {
@@ -33,9 +34,24 @@ function renderRemote(remote: RecoveryKitRemote): string {
 				`path: ${remote.path}`,
 				`destination: ${remote.destination}`,
 			].join("\n");
+		case "oauth":
+			return [
+				"type: oauth",
+				`provider: ${remote.provider}`,
+				`destination: ${remote.destination}`,
+				"authorization: re-authentication required on a new machine",
+				"credentials: not included",
+			].join("\n");
 		case "rclone":
 			return `type: rclone\ndestination: ${remote.destination}`;
 	}
+}
+
+function oauthFreshMachineSetup(remote: Extract<RecoveryKitRemote, { type: "oauth" }>): string {
+	const provider = remote.provider === "google-drive" ? "Google Drive" : "Dropbox";
+	return `Run packbat init, choose ${provider}, and authorize this destination in the browser.
+Use destination: ${remote.destination}
+The recovery kit intentionally contains no access token, refresh token, or OAuth client secret.`;
 }
 
 export function renderRecoveryKit(input: RecoveryKitInput): string {
@@ -44,6 +60,11 @@ export function renderRecoveryKit(input: RecoveryKitInput): string {
 		.join("\n\n");
 	const firstRemote = input.remotes[0];
 	const additionalSetup = input.remotes.length === 1 ? "" : "\nAdd the other remote destinations to config.json.\n";
+	const freshMachineSetup =
+		firstRemote.type === "oauth"
+			? oauthFreshMachineSetup(firstRemote)
+			: `Configure rclone access to ${input.remotes.map((remote) => remote.destination).join(", ")}, then run:
+packbat init --yes --offbox remote --offbox-remote ${firstRemote.destination} --age-recipient ${input.recipient} --rclone-config default`;
 	const restoreCommands = input.remotes
 		.map(
 			(remote, index) =>
@@ -64,8 +85,7 @@ ${input.recipient}
 ${remoteSections}
 
 Fresh-machine setup
-Configure rclone access to ${input.remotes.map((remote) => remote.destination).join(", ")}, then run:
-packbat init --yes --offbox remote --offbox-remote ${firstRemote.destination} --age-recipient ${input.recipient} --rclone-config default
+${freshMachineSetup}
 ${additionalSetup}
 Fresh-machine restore
 ${restoreCommands}

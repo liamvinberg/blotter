@@ -26,5 +26,10 @@ jobs:
       - run: pnpm -C apps/cli test
       - run: pnpm check
       - run: pnpm release:check
+        env:
+          PACKBAT_DROPBOX_APP_KEY: ${{ secrets.PACKBAT_DROPBOX_APP_KEY }}
+          PACKBAT_GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.PACKBAT_GOOGLE_DRIVE_CLIENT_ID }}
+          PACKBAT_GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.PACKBAT_GOOGLE_DRIVE_CLIENT_SECRET }}
+          PACKBAT_RELEASE_BUILD: "1"
       - run: npm publish
         working-directory: apps/cli

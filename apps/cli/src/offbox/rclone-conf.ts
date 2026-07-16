@@ -1,10 +1,13 @@
 import { writePrivateFile } from "../core/private-file.js";
 
 export interface S3RemoteInput {
-	endpoint: string;
+	endpoint?: string;
 	accessKeyId: string;
 	secretAccessKey: string;
+	provider?: "AWS" | "Cloudflare" | "Other";
 	region?: string;
+	acl?: "private";
+	noCheckBucket?: boolean;
 }
 
 export interface SftpRemoteInput {
@@ -42,11 +45,13 @@ export function renderS3Remote(input: S3RemoteInput, remoteName = managedRcloneR
 	return renderRemote([
 		`[${remoteName}]`,
 		"type = s3",
-		"provider = Other",
+		`provider = ${input.provider ?? "Other"}`,
 		`access_key_id = ${input.accessKeyId}`,
 		`secret_access_key = ${input.secretAccessKey}`,
-		`endpoint = ${input.endpoint}`,
+		...(input.endpoint === undefined ? [] : [`endpoint = ${input.endpoint}`]),
 		...(input.region === undefined ? [] : [`region = ${input.region}`]),
+		...(input.acl === undefined ? [] : [`acl = ${input.acl}`]),
+		...(input.noCheckBucket === true ? ["no_check_bucket = true"] : []),
 	]);
 }
 

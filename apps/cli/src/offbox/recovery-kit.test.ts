@@ -66,6 +66,26 @@ If every copy of this identity is lost, nobody can recover this archive.
 		expect(kit).toContain("--remote second:archive");
 	});
 
+	test.each([
+		["google-drive" as const, "Google Drive"],
+		["dropbox" as const, "Dropbox"],
+	])("keeps %s authorization material out of the recovery kit", (provider, displayName) => {
+		const kit = renderRecoveryKit({
+			identity: "AGE-SECRET-KEY-1SYNTHETICIDENTITY",
+			recipient: "age1syntheticrecipient12345678",
+			remotes: [{ type: "oauth", provider, destination: "packbat:packbat" }],
+			createdAt: "2026-07-16T10:11:12.000Z",
+		});
+
+		expect(kit).toContain(`type: oauth\nprovider: ${provider}\ndestination: packbat:packbat`);
+		expect(kit).toContain(`Run packbat init, choose ${displayName}, and authorize this destination in the browser.`);
+		expect(kit).toContain(
+			"The recovery kit intentionally contains no access token, refresh token, or OAuth client secret.",
+		);
+		expect(kit).not.toContain("--rclone-config default");
+		expect(kit).not.toContain("token =");
+	});
+
 	test("uses the last eight recipient characters as the custody challenge", () => {
 		expect(recipientChallenge("age1syntheticrecipient12345678")).toBe("12345678");
 	});

@@ -47,6 +47,32 @@ endpoint = https://objects.example.com
 `);
 	});
 
+	test("renders the provider-specific R2 and AWS settings", () => {
+		expect(
+			renderS3Remote({
+				accessKeyId: "r2-access-key-id",
+				secretAccessKey: "r2-secret-access-key",
+				provider: "Cloudflare",
+				endpoint: "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+				region: "auto",
+				acl: "private",
+				noCheckBucket: true,
+			}),
+		).toContain(
+			"provider = Cloudflare\naccess_key_id = r2-access-key-id\nsecret_access_key = r2-secret-access-key\nendpoint = https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com\nregion = auto\nacl = private\nno_check_bucket = true\n",
+		);
+		expect(
+			renderS3Remote({
+				accessKeyId: "aws-access-key-id",
+				secretAccessKey: "aws-secret-access-key",
+				provider: "AWS",
+				region: "eu-north-1",
+			}),
+		).toContain(
+			"provider = AWS\naccess_key_id = aws-access-key-id\nsecret_access_key = aws-secret-access-key\nregion = eu-north-1\n",
+		);
+	});
+
 	test("renders an SFTP remote with optional connection fields", () => {
 		expect(
 			renderSftpRemote({

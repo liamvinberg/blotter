@@ -41,6 +41,55 @@ async function managedConfigArguments(mode: RcloneConfigMode): Promise<string[]>
 	return ["--config", configPath];
 }
 
+async function prepareManagedConfig(path: string): Promise<void> {
+	await mkdir(dirname(path), { recursive: true });
+	const handle = await open(path, "a", 0o600);
+	await handle.close();
+	await chmod(path, 0o600);
+}
+
+export async function configureGoogleDriveRemote(options: {
+	clientId: string;
+	clientSecret: string;
+	configPath: string;
+	remoteName: string;
+}): Promise<void> {
+	const executable = await discoverRclone();
+	await prepareManagedConfig(options.configPath);
+	const code = await new Promise<number>((resolve, reject) => {
+		const child = spawn(
+			executable,
+			[
+				"config",
+				"create",
+				options.remoteName,
+				"drive",
+				"client_id",
+				options.clientId,
+				"client_secret",
+				options.clientSecret,
+				"scope",
+				"drive.file",
+				"config_is_local",
+				"true",
+				"config_change_team_drive",
+				"false",
+				"--obscure",
+				"--no-output",
+				"--config",
+				options.configPath,
+			],
+			{ env: process.env, stdio: "inherit" },
+		);
+		child.once("error", reject);
+		child.once("close", (childCode) => resolve(childCode ?? 1));
+	});
+	await chmod(options.configPath, 0o600);
+	if (code !== 0) {
+		throw new PackbatError("Google Drive authorization was not completed");
+	}
+}
+
 async function runRclone(
 	command: "copy" | "copyto" | "lsjson",
 	args: string[],

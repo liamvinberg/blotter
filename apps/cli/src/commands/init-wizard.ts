@@ -14,7 +14,10 @@ import {
 	writeInitConfig,
 } from "../core/setup.js";
 import { generateIdentity, identityToRecipient } from "../offbox/age.js";
-import { discoverRclone } from "../offbox/rclone.js";
+import { backblazeRegion, discoverBackblazeS3Endpoint } from "../offbox/backblaze.js";
+import { authorizeDropboxRemote } from "../offbox/dropbox-oauth.js";
+import { dropboxAppKey, googleDriveClient } from "../offbox/oauth-clients.js";
+import { configureGoogleDriveRemote, discoverRclone } from "../offbox/rclone.js";
 import { renderS3Remote, renderSftpRemote, writeManagedRcloneConfig } from "../offbox/rclone-conf.js";
 import { pickRcloneInstall } from "../offbox/rclone-install.js";
 import {
@@ -23,6 +26,7 @@ import {
 	renderRecoveryKit,
 	writeRecoveryKit,
 } from "../offbox/recovery-kit.js";
+import { cloudflareR2Endpoint, guidedS3Destination, parseR2Token } from "../offbox/s3-recipes.js";
 import { smokeTestRemoteIndex } from "../offbox/smoke.js";
 import { previewSchedule } from "../schedule/scheduler.js";
 import { runDoctor } from "./doctor.js";
@@ -48,8 +52,10 @@ type OffboxSetupResult =
 interface RemoteSetup {
 	remote: OffboxRemote;
 	recovery: RecoveryKitRemote;
-	managedConfig?: string;
+	configure?: () => Promise<void>;
 }
+
+type DestinationChoice = "google-drive" | "dropbox" | "s3" | "server" | "skip";
 
 function cancelWizard(): WizardCancelled {
 	cancel("Setup cancelled.");
@@ -69,7 +75,14 @@ function singleLine(value: string | undefined): string | undefined {
 }
 
 async function askRequiredText(message: string): Promise<string | WizardCancelled> {
-	const answer = promptResult(await text({ message, validate: required }));
+	const answer = promptResult(
+		await text({
+			message,
+			validate(value) {
+				return required(value) ?? singleLine(value);
+			},
+		}),
+	);
 	return answer === WIZARD_CANCELLED ? answer : answer.trim();
 }
 
@@ -79,7 +92,14 @@ async function askOptionalText(message: string): Promise<string | WizardCancelle
 }
 
 async function askSecret(message: string): Promise<string | WizardCancelled> {
-	const answer = promptResult(await password({ message, validate: required }));
+	const answer = promptResult(
+		await password({
+			message,
+			validate(value) {
+				return required(value) ?? singleLine(value);
+			},
+		}),
+	);
 	return answer === WIZARD_CANCELLED ? answer : answer.trim();
 }
 
@@ -141,7 +161,7 @@ async function ensureRclone(): Promise<boolean | WizardCancelled> {
 	}
 }
 
-async function askS3Remote(): Promise<RemoteSetup | WizardCancelled> {
+async function askOtherS3Remote(configPath: string): Promise<RemoteSetup | WizardCancelled> {
 	const endpoint = await askRequiredText("S3 endpoint");
 	if (endpoint === WIZARD_CANCELLED) return endpoint;
 	const accessKeyId = await askRequiredText("Access key ID");
@@ -165,16 +185,160 @@ async function askS3Remote(): Promise<RemoteSetup | WizardCancelled> {
 			bucket,
 			...(prefix === "" ? {} : { prefix }),
 		},
-		managedConfig: renderS3Remote({
-			endpoint,
-			accessKeyId,
-			secretAccessKey,
-			...(region === "" ? {} : { region }),
-		}),
+		configure: async () => {
+			await writeManagedRcloneConfig(
+				configPath,
+				renderS3Remote({
+					endpoint,
+					accessKeyId,
+					secretAccessKey,
+					...(region === "" ? {} : { region }),
+				}),
+			);
+		},
 	};
 }
 
-async function askSftpRemote(): Promise<RemoteSetup | WizardCancelled> {
+async function askR2Remote(configPath: string): Promise<RemoteSetup | WizardCancelled> {
+	note(
+		[
+			"1. Create a private R2 bucket.",
+			"2. Create an Object Read and Write token scoped to that bucket.",
+			"3. Copy the Account ID, Access Key ID, and Secret Access Key before leaving the page.",
+		].join("\n"),
+		"Cloudflare R2",
+	);
+	const accountId = await askRequiredText("Cloudflare account ID");
+	if (accountId === WIZARD_CANCELLED) return accountId;
+	const tokenAnswer = promptResult(
+		await password({
+			message: "R2 token (Access Key ID:Secret Access Key)",
+			validate(value) {
+				try {
+					parseR2Token(value?.trim() ?? "");
+					return undefined;
+				} catch {
+					return "Paste the Access Key ID, a colon, and the Secret Access Key.";
+				}
+			},
+		}),
+	);
+	if (tokenAnswer === WIZARD_CANCELLED) return tokenAnswer;
+	const bucket = await askRequiredText("Bucket");
+	if (bucket === WIZARD_CANCELLED) return bucket;
+	const endpoint = cloudflareR2Endpoint(accountId);
+	const credentials = parseR2Token(tokenAnswer.trim());
+	const destination = guidedS3Destination(bucket);
+
+	return {
+		remote: { type: "rclone", destination, rcloneConfig: "managed" },
+		recovery: { type: "s3-compatible", destination, endpoint, bucket, prefix: "packbat" },
+		configure: async () => {
+			await writeManagedRcloneConfig(
+				configPath,
+				renderS3Remote({
+					...credentials,
+					endpoint,
+					provider: "Cloudflare",
+					region: "auto",
+					acl: "private",
+					noCheckBucket: true,
+				}),
+			);
+		},
+	};
+}
+
+async function askBackblazeRemote(configPath: string): Promise<RemoteSetup | WizardCancelled> {
+	note(
+		[
+			"1. Create a private B2 bucket.",
+			"2. Create a Read and Write application key restricted to that bucket.",
+			"3. Copy the keyID and applicationKey before leaving the page.",
+		].join("\n"),
+		"Backblaze B2",
+	);
+	const keyId = await askRequiredText("keyID");
+	if (keyId === WIZARD_CANCELLED) return keyId;
+	const applicationKey = await askSecret("applicationKey");
+	if (applicationKey === WIZARD_CANCELLED) return applicationKey;
+	const bucket = await askRequiredText("Bucket");
+	if (bucket === WIZARD_CANCELLED) return bucket;
+	const endpoint = await discoverBackblazeS3Endpoint(keyId, applicationKey);
+	const region = backblazeRegion(endpoint);
+	const destination = guidedS3Destination(bucket);
+
+	return {
+		remote: { type: "rclone", destination, rcloneConfig: "managed" },
+		recovery: { type: "s3-compatible", destination, endpoint, bucket, prefix: "packbat" },
+		configure: async () => {
+			await writeManagedRcloneConfig(
+				configPath,
+				renderS3Remote({ endpoint, accessKeyId: keyId, secretAccessKey: applicationKey, region }),
+			);
+		},
+	};
+}
+
+async function askAwsRemote(configPath: string): Promise<RemoteSetup | WizardCancelled> {
+	note(
+		[
+			"1. Create a private S3 bucket.",
+			"2. Create an IAM policy limited to that bucket.",
+			"3. Create an access key for the policy user.",
+		].join("\n"),
+		"AWS S3",
+	);
+	const accessKeyId = await askRequiredText("Access key ID");
+	if (accessKeyId === WIZARD_CANCELLED) return accessKeyId;
+	const secretAccessKey = await askSecret("Secret access key");
+	if (secretAccessKey === WIZARD_CANCELLED) return secretAccessKey;
+	const region = await askRequiredText("Region");
+	if (region === WIZARD_CANCELLED) return region;
+	const bucket = await askRequiredText("Bucket");
+	if (bucket === WIZARD_CANCELLED) return bucket;
+	const destination = guidedS3Destination(bucket);
+	const endpoint = `https://s3.${region}.amazonaws.com`;
+
+	return {
+		remote: { type: "rclone", destination, rcloneConfig: "managed" },
+		recovery: { type: "s3-compatible", destination, endpoint, bucket, prefix: "packbat" },
+		configure: async () => {
+			await writeManagedRcloneConfig(
+				configPath,
+				renderS3Remote({ accessKeyId, secretAccessKey, provider: "AWS", region }),
+			);
+		},
+	};
+}
+
+async function askS3Remote(configPath: string): Promise<RemoteSetup | WizardCancelled> {
+	const provider = promptResult<"r2" | "b2" | "aws" | "other">(
+		await select<"r2" | "b2" | "aws" | "other">({
+			message: "S3 provider",
+			options: [
+				{ value: "r2" as const, label: "Cloudflare R2" },
+				{ value: "b2" as const, label: "Backblaze B2" },
+				{ value: "aws" as const, label: "AWS" },
+				{ value: "other" as const, label: "Other S3-compatible provider" },
+			],
+			initialValue: "r2",
+		}),
+	);
+	if (provider === WIZARD_CANCELLED) return provider;
+	switch (provider) {
+		case "r2":
+			return await askR2Remote(configPath);
+		case "b2":
+			return await askBackblazeRemote(configPath);
+		case "aws":
+			return await askAwsRemote(configPath);
+		case "other":
+			return await askOtherS3Remote(configPath);
+	}
+}
+
+async function askSftpRemote(configPath: string): Promise<RemoteSetup | WizardCancelled> {
 	const host = await askRequiredText("SFTP host");
 	if (host === WIZARD_CANCELLED) return host;
 	const user = await askRequiredText("SFTP user");
@@ -209,12 +373,17 @@ async function askSftpRemote(): Promise<RemoteSetup | WizardCancelled> {
 			...(port === undefined ? {} : { port }),
 			path: remotePath,
 		},
-		managedConfig: renderSftpRemote({
-			host,
-			user,
-			...(port === undefined ? {} : { port }),
-			...(keyFile === "" ? {} : { keyFile }),
-		}),
+		configure: async () => {
+			await writeManagedRcloneConfig(
+				configPath,
+				renderSftpRemote({
+					host,
+					user,
+					...(port === undefined ? {} : { port }),
+					...(keyFile === "" ? {} : { keyFile }),
+				}),
+			);
+		},
 	};
 }
 
@@ -226,40 +395,85 @@ async function askCustomRemote(): Promise<RemoteSetup | WizardCancelled> {
 			message: "Rclone config",
 			options: [
 				{ value: "default" as const, label: "Default rclone config" },
-				{ value: "managed" as const, label: "Managed by Packbat" },
+				{
+					value: "managed" as const,
+					label: "Managed by Packbat",
+					hint: "Choose a guided destination for this option",
+					disabled: true,
+				},
 			],
 			initialValue: "default",
 		}),
 	);
 	if (configMode === WIZARD_CANCELLED) return configMode;
 	return {
-		remote: { type: "rclone", destination, rcloneConfig: configMode },
+		remote: { type: "rclone", destination, rcloneConfig: "default" },
 		recovery: { type: "rclone", destination },
 	};
 }
 
-async function askRemote(): Promise<RemoteSetup | WizardCancelled> {
-	const kind = promptResult<"s3" | "sftp" | "custom">(
-		await select<"s3" | "sftp" | "custom">({
-			message: "Remote kind",
+async function askServerRemote(configPath: string): Promise<RemoteSetup | WizardCancelled> {
+	const kind = promptResult<"sftp" | "custom">(
+		await select<"sftp" | "custom">({
+			message: "Server connection",
 			options: [
-				{ value: "s3" as const, label: "S3-compatible" },
 				{ value: "sftp" as const, label: "SFTP" },
 				{ value: "custom" as const, label: "Any rclone destination" },
 			],
-			initialValue: "s3",
+			initialValue: "sftp",
 		}),
 	);
 	if (kind === WIZARD_CANCELLED) return kind;
 	switch (kind) {
-		case "s3":
-			return await askS3Remote();
 		case "sftp":
-			return await askSftpRemote();
+			return await askSftpRemote(configPath);
 		case "custom":
 			return await askCustomRemote();
 	}
-	throw new Error("Unknown remote kind");
+}
+
+function googleDriveRemote(configPath: string): RemoteSetup {
+	const client = googleDriveClient();
+	const destination = "packbat:packbat";
+	return {
+		remote: { type: "rclone", destination, rcloneConfig: "managed" },
+		recovery: { type: "oauth", provider: "google-drive", destination },
+		configure: async () => {
+			await configureGoogleDriveRemote({
+				...client,
+				configPath,
+				remoteName: "packbat",
+			});
+		},
+	};
+}
+
+function dropboxRemote(configPath: string): RemoteSetup {
+	const appKey = dropboxAppKey();
+	const destination = "packbat:packbat";
+	return {
+		remote: { type: "rclone", destination, rcloneConfig: "managed" },
+		recovery: { type: "oauth", provider: "dropbox", destination },
+		configure: async () => {
+			await authorizeDropboxRemote({ appKey, configPath, remoteName: "packbat" });
+		},
+	};
+}
+
+async function askRemote(
+	choice: Exclude<DestinationChoice, "skip">,
+	configPath: string,
+): Promise<RemoteSetup | WizardCancelled> {
+	switch (choice) {
+		case "google-drive":
+			return googleDriveRemote(configPath);
+		case "dropbox":
+			return dropboxRemote(configPath);
+		case "s3":
+			return await askS3Remote(configPath);
+		case "server":
+			return await askServerRemote(configPath);
+	}
 }
 
 async function saveRecoveryKit(kit: string, homePath: string): Promise<boolean | WizardCancelled> {
@@ -323,12 +537,15 @@ async function verifyCustody(challenge: string): Promise<boolean | WizardCancell
 async function configureOffbox(config: PackbatConfig, homePath: string): Promise<OffboxSetupResult | WizardCancelled> {
 	const home = resolveHome();
 	log.info("Right now your archive lives only on this machine. An encrypted copy on a remote you own survives it.");
-	const choice = promptResult<"skip" | "remote">(
-		await select<"skip" | "remote">({
-			message: "Off-box copies",
+	const choice = promptResult<DestinationChoice>(
+		await select<DestinationChoice>({
+			message: "Off-box destination",
 			options: [
+				{ value: "google-drive" as const, label: "Google Drive" },
+				{ value: "dropbox" as const, label: "Dropbox" },
+				{ value: "s3" as const, label: "An S3 bucket" },
+				{ value: "server" as const, label: "My own server" },
 				{ value: "skip" as const, label: "Skip for now" },
-				{ value: "remote" as const, label: "A remote I own" },
 			],
 			initialValue: "skip",
 		}),
@@ -343,7 +560,7 @@ async function configureOffbox(config: PackbatConfig, homePath: string): Promise
 		return { kind: "skipped", config: await writeInitConfig(home, config.archiveRoot, skippedOffboxConfig()) };
 	}
 
-	const remote = await askRemote();
+	const remote = await askRemote(choice, home.rcloneConfPath);
 	if (remote === WIZARD_CANCELLED) return remote;
 	const identity = await generateIdentity();
 	const recipient = await identityToRecipient(identity);
@@ -363,8 +580,8 @@ async function configureOffbox(config: PackbatConfig, homePath: string): Promise
 		return { kind: "skipped", config: await writeInitConfig(home, config.archiveRoot, skippedOffboxConfig()) };
 	}
 	log.success("Recovery kit verified. The key is only needed to restore from the remote.");
-	if (remote.managedConfig !== undefined) {
-		await writeManagedRcloneConfig(home.rcloneConfPath, remote.managedConfig);
+	if (remote.configure !== undefined) {
+		await remote.configure();
 	}
 	const offbox: ConfiguredOffbox = { mode: "configured", recipient, remotes: [remote.remote] };
 	return { kind: "configured", config: await writeInitConfig(home, config.archiveRoot, offbox), offbox, identity };
