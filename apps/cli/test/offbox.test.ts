@@ -426,6 +426,36 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		expect(existsSync(join(layout.packbatHome, "rclone.conf"))).toBe(false);
 	});
 
+	test("rejects section-only and incomplete managed rclone configs at the CLI boundary", async () => {
+		const layout = await makeLayout();
+		const recipient = await identityToRecipient(await generateIdentity());
+		const sourceConfig = join(layout.home, "source-rclone.conf");
+		const argumentsFor = [
+			"init",
+			"--yes",
+			"--archive-root",
+			layout.archiveRoot,
+			"--offbox",
+			"remote",
+			"--offbox-remote",
+			`packbat:${layout.remote}`,
+			"--age-recipient",
+			recipient,
+			"--rclone-config",
+			"managed",
+			"--managed-rclone-config",
+			sourceConfig,
+			"--no-activate",
+		];
+		for (const invalid of ["[packbat]\n", "[packbat]\ntype = s3\n", "[packbat]\ntype = Not Valid\n"]) {
+			await writeFile(sourceConfig, invalid);
+			const result = await runCli(argumentsFor, { home: layout.home, env: layout.env });
+			expect(result.code).toBe(1);
+			expect(result.stderr).toContain("managed rclone remote [packbat]");
+			expect(existsSync(join(layout.packbatHome, "rclone.conf"))).toBe(false);
+		}
+	});
+
 	test("copies and uses a private populated rclone config in managed mode", async () => {
 		const layout = await makeLayout();
 		const identity = await generateIdentity();

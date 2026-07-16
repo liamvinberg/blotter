@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { makeTempHome, runCli } from "./helpers/run-cli.js";
+import { acquireOAuthCallbackPort, makeTempHome, runCli } from "./helpers/run-cli.js";
 
 const TOKEN_ENDPOINT = "https://api.dropboxapi.com/oauth2/token";
 const APP_KEY = "synthetic-app-key";
@@ -188,6 +188,7 @@ globalThis.fetch = (input, init) => {
 }
 
 async function runAgainstProvider(tokenOutcome: "success" | "error") {
+	const releaseCallbackPort = await acquireOAuthCallbackPort();
 	const home = await makeTempHome();
 	homes.push(home);
 	const packbatHome = join(home, ".packbat");
@@ -206,6 +207,7 @@ async function runAgainstProvider(tokenOutcome: "success" | "error") {
 		return { ...provider, configPath: join(packbatHome, "rclone.conf"), result };
 	} finally {
 		await close(provider.server);
+		await releaseCallbackPort();
 	}
 }
 
