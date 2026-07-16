@@ -2,6 +2,7 @@ import { createScheduledController } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
+import { deliverStripeEvent, subscriptionEvent } from "./helpers/stripe.js";
 
 interface LinkedAccount {
 	accessToken: string;
@@ -37,6 +38,17 @@ function jsonRequest(path: string, body: unknown, accessToken?: string): Request
 function mockGitHubUsers(usersByToken: Record<string, { id: number; login: string }>): void {
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = new Request(input, init);
+		if (request.url === "https://api.stripe.com/v1/customers") {
+			const body = new TextDecoder().decode(await request.arrayBuffer());
+			const userId = new URLSearchParams(body).get("metadata[packbat_user_id]");
+			if (userId === null) {
+				throw new Error("Stripe customer request had no Packbat user ID");
+			}
+			return Response.json({ id: `cus_${userId.replaceAll("-", "")}` });
+		}
+		if (request.url === "https://api.stripe.com/v1/checkout/sessions") {
+			return Response.json({ id: "cs_test_storage", url: "https://checkout.stripe.com/c/pay/test" });
+		}
 		const authorization = request.headers.get("Authorization");
 		const token = authorization?.replace(/^Bearer /u, "");
 		const user = token === undefined ? undefined : usersByToken[token];
@@ -47,7 +59,31 @@ function mockGitHubUsers(usersByToken: Record<string, { id: number; login: strin
 async function exchange(githubAccessToken = "github-token"): Promise<LinkedAccount> {
 	const response = await exports.default.fetch(jsonRequest("/v1/auth/github/exchange", { githubAccessToken }));
 	expect(response.status).toBe(200);
-	return (await response.json()) as LinkedAccount;
+	const linked = (await response.json()) as LinkedAccount;
+	const checkout = await exports.default.fetch(
+		jsonRequest(
+			"/v1/billing/checkout",
+			{ idempotencyKey: `storage-${linked.account.id}`, interval: "month" },
+			linked.accessToken,
+		),
+	);
+	expect(checkout.status).toBe(201);
+	const suffix = linked.account.id.replaceAll("-", "");
+	const currentTime = Math.floor(Date.now() / 1_000);
+	const activated = await deliverStripeEvent(
+		subscriptionEvent({
+			created: currentTime,
+			customerId: `cus_${suffix}`,
+			eventId: `evt_storage_${suffix}`,
+			status: "active",
+			subscriptionId: `sub_${suffix}`,
+			type: "customer.subscription.created",
+			userId: linked.account.id,
+		}),
+		currentTime,
+	);
+	expect(activated.status).toBe(200);
+	return linked;
 }
 
 async function createMachine(accessToken: string): Promise<string> {
@@ -196,6 +232,33 @@ describe("ciphertext uploads", () => {
 		expect(download.status).toBe(200);
 		const downloadBody = (await download.json()) as { expiresAt: string; url: string };
 		expect(new URL(downloadBody.url).searchParams.get("X-Amz-SignedHeaders")).toBe("host");
+
+		const suffix = linked.account.id.replaceAll("-", "");
+		const currentTime = Math.floor(Date.now() / 1_000);
+		const lapsed = await deliverStripeEvent(
+			subscriptionEvent({
+				created: currentTime + 1,
+				customerId: `cus_${suffix}`,
+				eventId: `evt_storage_lapsed_${suffix}`,
+				status: "past_due",
+				subscriptionId: `sub_${suffix}`,
+				userId: linked.account.id,
+			}),
+			currentTime,
+		);
+		expect(lapsed.status).toBe(200);
+		const frozen = await reserve(linked.accessToken, {
+			bytes: new Uint8Array([9]),
+			idempotencyKey: "frozen-during-grace",
+			logicalObjectKey: "claude/frozen.age",
+			machineRemoteId,
+		});
+		expect(frozen.status).toBe(402);
+		expect(await frozen.json()).toEqual({ error: "subscription_required" });
+		const graceDownload = await exports.default.fetch(
+			jsonRequest("/v1/downloads", { logicalObjectKey, machineRemoteId }, linked.accessToken),
+		);
+		expect(graceDownload.status).toBe(200);
 	});
 
 	it("admits concurrent reservations only while their total stays under quota", async () => {
@@ -327,6 +390,91 @@ describe("ciphertext uploads", () => {
 		});
 		expect(completed.status).toBe(200);
 		expect(await completed.json()).toMatchObject({ reservationId: first.reservationId, state: "completed" });
+	});
+
+	it("repairs authoritative used and reserved counters from the ledger and live reservations", async () => {
+		mockGitHubUsers({ "github-token": { id: 42_424, login: "octocat" } });
+		const linked = await exchange();
+		const machineRemoteId = await createMachine(linked.accessToken);
+		const pending = await reserve(linked.accessToken, {
+			bytes: new Uint8Array([1, 2, 3]),
+			idempotencyKey: "accounting-repair",
+			logicalObjectKey: "codex/accounting.age",
+			machineRemoteId,
+		});
+		expect(pending.status).toBe(201);
+		await env.DB.prepare("UPDATE users SET used_bytes = 77, reserved_bytes = 88 WHERE id = ?")
+			.bind(linked.account.id)
+			.run();
+
+		await worker.scheduled(createScheduledController({ scheduledTime: Date.now() }), env);
+
+		expect(
+			await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?").bind(linked.account.id).first(),
+		).toEqual({ reserved_bytes: 3, used_bytes: 0 });
+	});
+
+	it("does not erase a reservation admitted concurrently with scheduled accounting repair", async () => {
+		const currentTime = Math.floor(Date.now() / 1_000);
+		const sentinelUserId = "accounting-sentinel";
+		const targetUserId = "accounting-target";
+		const machineRemoteId = "accounting-machine";
+		const userIds = [
+			sentinelUserId,
+			...Array.from({ length: 40 }, (_, index) => `accounting-filler-${index}`),
+			targetUserId,
+		];
+		await env.DB.batch(
+			userIds.map((userId, index) =>
+				env.DB.prepare(
+					`INSERT INTO users (
+						id, github_subject_id, created_at, quota_bytes, used_bytes, reserved_bytes, storage_prefix
+					) VALUES (?, ?, ?, ?, 77, 88, ?)`,
+				).bind(userId, String(900_000 + index), currentTime, 100, `accounting/${index}`),
+			),
+		);
+		await env.DB.prepare("INSERT INTO machine_remotes (id, user_id, created_at) VALUES (?, ?, ?)")
+			.bind(machineRemoteId, targetUserId, currentTime)
+			.run();
+
+		const scheduled = worker.scheduled(createScheduledController({ scheduledTime: Date.now() }), env);
+		for (let attempt = 0; attempt < 100; attempt += 1) {
+			const sentinel = await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?")
+				.bind(sentinelUserId)
+				.first<{ reserved_bytes: number; used_bytes: number }>();
+			if (sentinel?.used_bytes === 0 && sentinel.reserved_bytes === 0) {
+				break;
+			}
+			if (attempt === 99) {
+				throw new Error("scheduled accounting repair did not start");
+			}
+		}
+		const admission = env.DB.batch([
+			env.DB.prepare("UPDATE users SET reserved_bytes = reserved_bytes + 3 WHERE id = ?").bind(targetUserId),
+			env.DB.prepare(
+				`INSERT INTO upload_reservations (
+					id, user_id, machine_remote_id, logical_object_key, sweep_id, expected_bytes,
+					checksum_sha256, replaced_bytes, idempotency_key, created_at, expires_at, state
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+			).bind(
+				crypto.randomUUID(),
+				targetUserId,
+				machineRemoteId,
+				"codex/concurrent-accounting.age",
+				"concurrent-accounting",
+				3,
+				"checksum",
+				0,
+				"concurrent-accounting",
+				currentTime,
+				currentTime + 300,
+			),
+		]);
+		await Promise.all([scheduled, admission]);
+
+		expect(
+			await env.DB.prepare("SELECT used_bytes, reserved_bytes FROM users WHERE id = ?").bind(targetUserId).first(),
+		).toEqual({ reserved_bytes: 3, used_bytes: 0 });
 	});
 
 	it("refuses finalization and removes an object whose length or checksum differs", async () => {

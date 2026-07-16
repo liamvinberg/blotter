@@ -6,6 +6,11 @@ Checked 2026-07-14. This resolves the architecture spike in
 ciphertext only. The age identity never reaches Packbat. User-owned storage stays the default init lane,
 and plaintext hosting is permanently out of scope.
 
+Commercial update, 2026-07-16: ADR 0002 and #33 supersede every free-tier and 10 GB entitlement statement in this
+spike. Packbat Cloud is paid-only, 100 GB at $5/month or $50/year, with upload freeze on lapse, a 90-day restore
+window, and then account-cascade deletion. The cost measurements below remain historical inputs, not the current
+product contract.
+
 ## Verdict
 
 | Area | Decision |
@@ -18,7 +23,7 @@ and plaintext hosting is permanently out of scope.
 | Browser key v1 | Choose the existing recovery-kit file locally, with pasted identity as fallback. Keep the identity in page memory only. |
 | Browser key later | A WebAuthn PRF passkey encrypts one small X25519 identity envelope. One confirmation unlocks the page session. |
 | Store | R2 Standard. B2 is cheaper, but R2 removes egress-cost abuse and keeps the service on one operational stack. |
-| Free tier | 10 GB per Cloud account. Plan on **$0.16 per fully used free user per month** at scale. |
+| Commercial shape | Paid-only, 100 GB at $5/month or $50/year; see ADR 0002 and #33. |
 
 The service can truthfully say that stored data is E2E encrypted. It cannot say that a server-delivered web
 client remains safe during an active server compromise: malicious dashboard JavaScript can steal a selected or
@@ -471,10 +476,10 @@ and #19 where its retrieval contract affects index presentation.
 
 ### Packbat Cloud: plan enforcement, billing, and abuse controls
 
-Ship the 10 GB free entitlement, authoritative used/reserved-byte accounting, request and download abuse limits,
-reservation reconciliation, billing-provider IDs only for paid accounts, and cost/limit alerts without product
-telemetry. Pricing and paid-plan UX remain blocked on the maintainer's productization verdict; quota correctness and
-cost protection do not. Dependencies: R2 ciphertext broker; paid billing additionally depends on the pricing verdict.
+Ship paid-only subscription enforcement, authoritative used/reserved-byte accounting, request and download abuse
+limits, reservation reconciliation, billing-provider IDs only once Checkout begins, and cost/limit alerts without
+product telemetry. Stripe drives active/grace/deletion state; grace expiry reuses the R2-first account cascade.
+Dependencies: R2 ciphertext broker and the accepted commercial/copy decisions in ADR 0002 and #39.
 
 ### Packbat Cloud: passkey-wrapped dashboard unlock
 
