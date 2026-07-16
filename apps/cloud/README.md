@@ -123,13 +123,13 @@ New accounts are `inactive`: they can authenticate and begin Checkout but cannot
 an upload. Only Stripe `active` grants upload admission. Any other status after prior activation starts one 90-day
 grace window immediately; no new reservation is admitted, but an operation already admitted through a presigned URL
 may finish within its existing five-minute capability window. This bounded in-flight completion avoids destroying a
-committed object while revoking a conditional replacement. Issue #41 keeps acceptance of this bounded in-flight
-behavior as an explicit human decision; it is implemented behavior, not settled product policy. Committed ciphertext
-remains downloadable until the stated deadline. Reactivation inside the window clears grace in place. The five-minute scheduled worker reconciles
-expired reservations and used/reserved accounting, then sends expired grace accounts without a live Checkout
-admission through the same R2-first deletion cascade as explicit account deletion. The deletion fence atomically
-rechecks that grace is still expired and no live admission exists, so a Checkout completed before the deadline can
-wait for its Stripe webhook without losing the account.
+committed object while revoking a conditional replacement. Issue #41 accepted this direct-to-R2 boundary: literal
+zero post-lapse bytes would require a broker or storage-protocol redesign. Committed ciphertext remains downloadable
+until the stated deadline. Reactivation inside the window clears grace in place. The five-minute scheduled worker
+reconciles expired reservations and used/reserved accounting, then sends expired grace accounts without a live
+Checkout admission through the same R2-first deletion cascade as explicit account deletion. The deletion fence
+atomically rechecks that grace is still expired and no live admission exists, so a Checkout completed before the
+deadline can wait for its Stripe webhook without losing the account.
 
 The migration is a pre-GA hard cut: every existing account becomes `inactive` while its credentials, machine rows,
 ledger, reservations, ciphertext, and byte counters are preserved. There is no legacy plan/free entitlement or

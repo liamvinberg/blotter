@@ -29,11 +29,13 @@ Packbat Cloud has no free tier.
   own-storage lanes are the evaluation path.
 - Own storage remains the free lane, remains first in init, and requires no account (ADR 0001
   unchanged).
-- Keep-forever is replaced by a stated retention contract. On lapse or cancellation: uploads
-  freeze immediately; every stored object stays readable and restorable for 90 days; downloads are
-  never charged; after the window, ciphertext and control-plane rows are removed by the #31
-  cascade. Re-subscribing inside the window reactivates in place. Re-linking after deletion
-  backfills from the local archive, because remotes are replicas.
+- Keep-forever is replaced by a stated retention contract. On lapse or cancellation, every new
+  upload reservation and presigned URL freezes immediately. A fully quota-reserved upload admitted
+  before the lapse may finish within its existing presigned URL lifetime, capped at five minutes.
+  Every stored object stays readable and restorable for 90 days; downloads are never charged;
+  after the window, ciphertext and control-plane rows are removed by the #31 cascade.
+  Re-subscribing inside the window reactivates in place. Re-linking after deletion backfills from
+  the local archive, because remotes are replicas.
 
 ## Consequences
 
@@ -44,6 +46,9 @@ Packbat Cloud has no free tier.
   notices, and doctor (grace state with the restore deadline, in the #27 copy register).
 - Mid-subscription semantics are unchanged: over-quota refuses new reservations and never deletes.
   Only lapse plus the elapsed grace window deletes.
+- The bounded in-flight rule preserves direct-to-R2 transfers without claiming an already-issued
+  bearer capability can be revoked. Literal zero post-lapse bytes would require a broker or storage
+  protocol redesign and is not part of this contract (#41).
 - #30's `plan` free/paid enum and free-quota default are superseded by subscription status
   (pre-GA hard cut, no migration bridge). #31 wires one cap. #33 loses the entitlement branch;
   Stripe webhooks drive lifecycle state, and Stripe holds the only email, which becomes the
