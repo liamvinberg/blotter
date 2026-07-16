@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -396,7 +397,7 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		expect(await stat(join(first.remote, "second-machine", "index.jsonl.age"))).toBeDefined();
 	});
 
-	test("touches and uses the packbat-owned config in managed mode", async () => {
+	test("refuses managed mode without a populated rclone config", async () => {
 		const layout = await makeLayout();
 		const identity = await generateIdentity();
 		const recipient = await identityToRecipient(identity);
@@ -420,9 +421,43 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 			{ home: layout.home, env: layout.env },
 		);
 
+		expect(initialized.code).toBe(1);
+		expect(initialized.stderr).toContain("--rclone-config managed requires --managed-rclone-config");
+		expect(existsSync(join(layout.packbatHome, "rclone.conf"))).toBe(false);
+	});
+
+	test("copies and uses a private populated rclone config in managed mode", async () => {
+		const layout = await makeLayout();
+		const identity = await generateIdentity();
+		const recipient = await identityToRecipient(identity);
+		const sourceConfig = join(layout.home, "source-rclone.conf");
+		await writeFile(sourceConfig, "[packbat]\ntype = local\nnounc = true\n");
+		const destination = `packbat:${layout.remote}`;
+
+		const initialized = await runCli(
+			[
+				"init",
+				"--yes",
+				"--archive-root",
+				layout.archiveRoot,
+				"--offbox",
+				"remote",
+				"--offbox-remote",
+				destination,
+				"--age-recipient",
+				recipient,
+				"--rclone-config",
+				"managed",
+				"--managed-rclone-config",
+				sourceConfig,
+				"--no-activate",
+			],
+			{ home: layout.home, env: layout.env },
+		);
+
 		expect(initialized.code).toBe(0);
 		const managedConfigPath = join(layout.packbatHome, "rclone.conf");
-		expect(await readFile(managedConfigPath, "utf8")).toBe("");
+		expect(await readFile(managedConfigPath, "utf8")).toBe("[packbat]\ntype = local\nnounc = true\n");
 		expect((await stat(managedConfigPath)).mode & 0o777).toBe(0o600);
 		const config = JSON.parse(await readFile(join(layout.packbatHome, "config.json"), "utf8")) as {
 			machine: string;
@@ -438,6 +473,10 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		const layout = await makeLayout();
 		const firstIdentity = await generateIdentity();
 		const firstRecipient = await identityToRecipient(firstIdentity);
+		const managedConfigSource = join(layout.home, "source-rclone.conf");
+		await writeFile(managedConfigSource, "[packbat]\ntype = local\nnounc = true\n");
+		await mkdir(join(layout.home, ".config", "rclone"), { recursive: true });
+		await writeFile(join(layout.home, ".config", "rclone", "rclone.conf"), "[packbat]\ntype = local\nnounc = true\n");
 		await makeClaudeStore(layout.claudeRoot, { main: { mtimeMs: SOURCE_MTIME_MS }, sidecars: [] });
 		const initArguments = (destination: string, recipient: string, rcloneConfig: "default" | "managed" = "default") => [
 			"init",
@@ -452,19 +491,21 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 			recipient,
 			"--rclone-config",
 			rcloneConfig,
+			...(rcloneConfig === "managed" ? ["--managed-rclone-config", managedConfigSource] : []),
 			"--no-activate",
 		];
 
+		const namedRemote = `packbat:${layout.remote}`;
 		expect(
-			(await runCli(initArguments(layout.remote, firstRecipient), { home: layout.home, env: layout.env })).code,
+			(await runCli(initArguments(namedRemote, firstRecipient), { home: layout.home, env: layout.env })).code,
 		).toBe(0);
 		expect(
-			(await runCli(initArguments(layout.remote, firstRecipient, "managed"), { home: layout.home, env: layout.env }))
+			(await runCli(initArguments(namedRemote, firstRecipient, "managed"), { home: layout.home, env: layout.env }))
 				.code,
 		).toBe(0);
 		expect(
 			JSON.parse(
-				await readFile(join(remoteStateDirectory(layout.packbatHome, layout.remote), "last-success.json"), "utf8"),
+				await readFile(join(remoteStateDirectory(layout.packbatHome, namedRemote), "last-success.json"), "utf8"),
 			),
 		).toMatchObject({ uploaded: 1 });
 		const secondRemote = join(layout.home, "second-remote");

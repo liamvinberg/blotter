@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { loadConfig, type OffboxConfig } from "../core/config.js";
 import { resolveHome } from "../core/home.js";
+import { writePrivateFile } from "../core/private-file.js";
 import {
 	createInitScheduleOptions,
 	detectInitStores,
@@ -16,7 +18,7 @@ import { runSync } from "./sync.js";
 
 const USAGE = `Usage: packbat init --yes [--archive-root <abs>] [--offbox skip|remote]
        [--offbox-remote <rclone-dest>] [--age-recipient <age1…>]
-       [--rclone-config default|managed] [--no-activate]
+       [--rclone-config default|managed] [--managed-rclone-config <abs>] [--no-activate]
        packbat init --uninstall
 `;
 
@@ -28,6 +30,7 @@ interface InitOptions {
 	offboxRemote?: string;
 	ageRecipient?: string;
 	rcloneConfig?: "default" | "managed";
+	managedRcloneConfig?: string;
 	noActivate: boolean;
 }
 
@@ -113,6 +116,18 @@ function parseOptions(argv: string[]): InitOptions | null {
 				index += 1;
 				break;
 			}
+			case "--managed-rclone-config": {
+				if (options.managedRcloneConfig !== undefined) {
+					return usageError("--managed-rclone-config may only be passed once");
+				}
+				const value = argv[index + 1];
+				if (value === undefined || !isAbsolute(value)) {
+					return usageError("--managed-rclone-config requires an absolute path");
+				}
+				options.managedRcloneConfig = value;
+				index += 1;
+				break;
+			}
 			case "--no-activate":
 				if (options.noActivate) {
 					return usageError("--no-activate may only be passed once");
@@ -137,6 +152,7 @@ function parseOptions(argv: string[]): InitOptions | null {
 			options.offboxRemote !== undefined ||
 			options.ageRecipient !== undefined ||
 			options.rcloneConfig !== undefined ||
+			options.managedRcloneConfig !== undefined ||
 			options.noActivate)
 	) {
 		return usageError("--uninstall cannot be combined with setup options");
@@ -151,9 +167,16 @@ function parseOptions(argv: string[]): InitOptions | null {
 	} else if (
 		options.offboxRemote !== undefined ||
 		options.ageRecipient !== undefined ||
-		options.rcloneConfig !== undefined
+		options.rcloneConfig !== undefined ||
+		options.managedRcloneConfig !== undefined
 	) {
 		return usageError("off-box remote options require --offbox remote");
+	}
+	if (options.rcloneConfig === "managed" && options.managedRcloneConfig === undefined) {
+		return usageError("--rclone-config managed requires --managed-rclone-config");
+	}
+	if (options.managedRcloneConfig !== undefined && options.rcloneConfig !== "managed") {
+		return usageError("--managed-rclone-config requires --rclone-config managed");
 	}
 	return options;
 }
@@ -176,6 +199,11 @@ function requestedOffbox(options: InitOptions): OffboxConfig | undefined {
 		};
 	}
 	return undefined;
+}
+
+function managedRemoteSection(destination: string): string | null {
+	const separator = destination.indexOf(":");
+	return separator <= 0 ? null : destination.slice(0, separator);
 }
 
 export async function runInit(argv: string[]): Promise<number> {
@@ -209,6 +237,34 @@ export async function runInit(argv: string[]): Promise<number> {
 	}
 
 	const home = resolveHome();
+	if (options.managedRcloneConfig !== undefined) {
+		let managedConfig: string;
+		try {
+			managedConfig = await readFile(options.managedRcloneConfig, "utf8");
+		} catch {
+			usageError("--managed-rclone-config must point to a readable file");
+			return 1;
+		}
+		const remoteSection = managedRemoteSection(options.offboxRemote!);
+		if (managedConfig.trim() === "" || remoteSection === null) {
+			usageError("--managed-rclone-config must contain the configured named remote");
+			return 1;
+		}
+		const sections = new Set(
+			managedConfig
+				.split(/\r?\n/u)
+				.map((line) => {
+					const trimmed = line.trim();
+					return trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : undefined;
+				})
+				.filter((section): section is string => section !== undefined),
+		);
+		if (!sections.has(remoteSection)) {
+			usageError(`--managed-rclone-config does not contain [${remoteSection}]`);
+			return 1;
+		}
+		await writePrivateFile(home.rcloneConfPath, managedConfig);
+	}
 	const detection = detectInitStores(homePath);
 	const config = await writeInitConfig(
 		home,
