@@ -1,12 +1,18 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, chmod, mkdir, open } from "node:fs/promises";
-import { dirname } from "node:path";
+import { access } from "node:fs/promises";
 import { PackbatError } from "../core/errors.js";
 import { commandOnPath } from "../core/exec.js";
 import { resolveHome } from "../core/home.js";
+import { ensurePrivateManagedRcloneConfig } from "./managed-rclone-config.js";
 
 export type RcloneConfigMode = "managed" | "default";
+export type RcloneOAuthFailure =
+	| { kind: "grant"; errorClass: "expired_access_token" | "invalid_access_token" | "invalid_grant" }
+	| {
+			kind: "client";
+			errorClass: "invalid_client" | "invalid_scope" | "unauthorized_client" | "unsupported_grant_type";
+	  };
 
 const RCLONE_MISSING =
 	"rclone was not found on PATH; install it with `brew install rclone` (macOS) or `apt install rclone` (Debian/Ubuntu)";
@@ -34,60 +40,8 @@ async function managedConfigArguments(mode: RcloneConfigMode): Promise<string[]>
 		return [];
 	}
 	const configPath = resolveHome().rcloneConfPath;
-	await mkdir(dirname(configPath), { recursive: true });
-	const handle = await open(configPath, "a", 0o600);
-	await handle.close();
-	await chmod(configPath, 0o600);
+	await ensurePrivateManagedRcloneConfig(configPath);
 	return ["--config", configPath];
-}
-
-async function prepareManagedConfig(path: string): Promise<void> {
-	await mkdir(dirname(path), { recursive: true });
-	const handle = await open(path, "a", 0o600);
-	await handle.close();
-	await chmod(path, 0o600);
-}
-
-export async function configureGoogleDriveRemote(options: {
-	clientId: string;
-	clientSecret: string;
-	configPath: string;
-	remoteName: string;
-}): Promise<void> {
-	const executable = await discoverRclone();
-	await prepareManagedConfig(options.configPath);
-	const code = await new Promise<number>((resolve, reject) => {
-		const child = spawn(
-			executable,
-			[
-				"config",
-				"create",
-				options.remoteName,
-				"drive",
-				"client_id",
-				options.clientId,
-				"client_secret",
-				options.clientSecret,
-				"scope",
-				"drive.file",
-				"config_is_local",
-				"true",
-				"config_change_team_drive",
-				"false",
-				"--obscure",
-				"--no-output",
-				"--config",
-				options.configPath,
-			],
-			{ env: process.env, stdio: "inherit" },
-		);
-		child.once("error", reject);
-		child.once("close", (childCode) => resolve(childCode ?? 1));
-	});
-	await chmod(options.configPath, 0o600);
-	if (code !== 0) {
-		throw new PackbatError("Google Drive authorization was not completed");
-	}
 }
 
 async function runRclone(
@@ -122,6 +76,37 @@ async function runRclone(
 			reject(new PackbatError(`rclone ${command} failed${output.trim() === "" ? "" : `: ${output.trim()}`}`));
 		});
 	});
+}
+
+export function classifyRcloneOAuthFailure(output: string): RcloneOAuthFailure | null {
+	const normalized = output.toLowerCase();
+	for (const errorClass of ["invalid_grant", "expired_access_token", "invalid_access_token"] as const) {
+		if (normalized.includes(errorClass)) return { kind: "grant", errorClass };
+	}
+	for (const errorClass of [
+		"invalid_client",
+		"unauthorized_client",
+		"unsupported_grant_type",
+		"invalid_scope",
+	] as const) {
+		if (normalized.includes(errorClass)) return { kind: "client", errorClass };
+	}
+	return null;
+}
+
+export async function probeRcloneOAuth(
+	destination: string,
+	mode: RcloneConfigMode,
+): Promise<{
+	ok: boolean;
+	failure: RcloneOAuthFailure | null;
+}> {
+	try {
+		await runRclone("lsjson", [destination, "--max-depth", "1"], mode);
+		return { ok: true, failure: null };
+	} catch (error) {
+		return { ok: false, failure: classifyRcloneOAuthFailure(error instanceof Error ? error.message : String(error)) };
+	}
 }
 
 export async function remoteFileExists(destinationFile: string, mode: RcloneConfigMode): Promise<boolean> {

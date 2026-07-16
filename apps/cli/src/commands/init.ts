@@ -1,9 +1,7 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { loadConfig, type OffboxConfig } from "../core/config.js";
 import { resolveHome } from "../core/home.js";
-import { writePrivateFile } from "../core/private-file.js";
 import {
 	createInitScheduleOptions,
 	detectInitStores,
@@ -12,6 +10,7 @@ import {
 	userHome,
 	writeInitConfig,
 } from "../core/setup.js";
+import { installManagedRcloneConfig } from "../offbox/managed-rclone-config.js";
 import { uninstallSchedule } from "../schedule/scheduler.js";
 import { runDoctor } from "./doctor.js";
 import { runSync } from "./sync.js";
@@ -201,11 +200,6 @@ function requestedOffbox(options: InitOptions): OffboxConfig | undefined {
 	return undefined;
 }
 
-function managedRemoteSection(destination: string): string | null {
-	const separator = destination.indexOf(":");
-	return separator <= 0 ? null : destination.slice(0, separator);
-}
-
 export async function runInit(argv: string[]): Promise<number> {
 	const options = parseOptions(argv);
 	if (options === null) {
@@ -230,7 +224,7 @@ export async function runInit(argv: string[]): Promise<number> {
 	if (!options.yes) {
 		if (process.stdin.isTTY === true) {
 			const { runInitWizard } = await import("./init-wizard.js");
-			return await runInitWizard();
+			return await runInitWizard({ activateSchedule: !options.noActivate });
 		}
 		process.stderr.write("packbat init: stdin is not a TTY; run `packbat init --yes`\n");
 		return 1;
@@ -238,32 +232,16 @@ export async function runInit(argv: string[]): Promise<number> {
 
 	const home = resolveHome();
 	if (options.managedRcloneConfig !== undefined) {
-		let managedConfig: string;
 		try {
-			managedConfig = await readFile(options.managedRcloneConfig, "utf8");
-		} catch {
-			usageError("--managed-rclone-config must point to a readable file");
+			await installManagedRcloneConfig({
+				sourcePath: options.managedRcloneConfig,
+				destinationPath: home.rcloneConfPath,
+				remoteDestination: options.offboxRemote!,
+			});
+		} catch (error) {
+			usageError(error instanceof Error ? error.message : "managed rclone config is invalid");
 			return 1;
 		}
-		const remoteSection = managedRemoteSection(options.offboxRemote!);
-		if (managedConfig.trim() === "" || remoteSection === null) {
-			usageError("--managed-rclone-config must contain the configured named remote");
-			return 1;
-		}
-		const sections = new Set(
-			managedConfig
-				.split(/\r?\n/u)
-				.map((line) => {
-					const trimmed = line.trim();
-					return trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : undefined;
-				})
-				.filter((section): section is string => section !== undefined),
-		);
-		if (!sections.has(remoteSection)) {
-			usageError(`--managed-rclone-config does not contain [${remoteSection}]`);
-			return 1;
-		}
-		await writePrivateFile(home.rcloneConfPath, managedConfig);
 	}
 	const detection = detectInitStores(homePath);
 	const config = await writeInitConfig(

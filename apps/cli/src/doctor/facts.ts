@@ -13,6 +13,7 @@ import { isEnoent, pathExists } from "../core/fs.js";
 import type { PackbatHome } from "../core/home.js";
 import { readDerivedIndex } from "../core/index.js";
 import type { RunStamp } from "../core/stamps.js";
+import { probeOAuthRemote } from "../offbox/oauth-doctor.js";
 import { CRON_MARKER, generateCronEntry } from "../schedule/cron.js";
 import { generateLaunchdPlist, LAUNCHD_LABEL } from "../schedule/launchd.js";
 import { generateSystemdService, generateSystemdTimer, SYSTEMD_SERVICE, SYSTEMD_TIMER } from "../schedule/systemd.js";
@@ -751,13 +752,53 @@ async function checkRemoteOffbox(context: DoctorContext, remote: RemoteConfig): 
 			});
 }
 
-export async function checkOffbox(context: DoctorContext): Promise<Fact[]> {
+async function checkRemoteOAuth(context: DoctorContext, remote: RemoteConfig): Promise<Fact | null> {
+	const probe = await probeOAuthRemote(context.home, remote);
+	const prefix = `${remote.destination} · `;
+	switch (probe.status) {
+		case "not-oauth":
+			return null;
+		case "ok":
+			return fact("offbox-auth", "ok", `${prefix}${probe.provider} authorization is valid`, {
+				destination: remote.destination,
+				provider: probe.provider,
+			});
+		case "reauthenticate":
+			return fact("offbox-auth", "problem", `${prefix}${probe.provider} authorization needs to be renewed`, {
+				destination: remote.destination,
+				provider: probe.provider,
+				errorClass: probe.errorClass,
+				remedy: "reauthenticate",
+			});
+		case "repair-client":
+			return fact("offbox-auth", "problem", `${prefix}${probe.provider} client configuration needs repair`, {
+				destination: remote.destination,
+				provider: probe.provider,
+				errorClass: probe.errorClass,
+				remedy: "repair-client",
+			});
+		case "unclassified":
+			return fact("offbox-auth", "info", `${prefix}${probe.provider} authorization could not be classified`, {
+				destination: remote.destination,
+				provider: probe.provider,
+			});
+	}
+}
+
+export async function checkOffbox(context: DoctorContext, probeAuthorization = false): Promise<Fact[]> {
 	if (context.config.offbox.mode === "skipped") {
 		return [fact("offbox", "info", `off-box skipped on ${context.config.offbox.skippedAt.slice(0, 10)}`)];
 	}
-	return await Promise.all(
-		context.config.offbox.remotes.map(async (remote) => await checkRemoteOffbox(context, remote)),
+	const remoteFacts = await Promise.all(
+		context.config.offbox.remotes.map(async (remote) => {
+			const [authorization, freshness] = await Promise.all([
+				probeAuthorization ? checkRemoteOAuth(context, remote) : null,
+				checkRemoteOffbox(context, remote),
+			]);
+			return authorization === null ? [freshness] : [authorization, freshness];
+		}),
 	);
+	return remoteFacts.flat();
 }
 
 export async function collectEnvironmentFacts(context: DoctorContext): Promise<Fact[]> {
@@ -766,7 +807,7 @@ export async function collectEnvironmentFacts(context: DoctorContext): Promise<F
 	const writable = await archiveWritableFact(context);
 	const disk = await diskHeadroomFact(context);
 	const compression = compressionFact();
-	const offbox = await checkOffbox(context);
+	const offbox = await checkOffbox(context, true);
 	return [...unsupported, readable, writable, disk, compression, ...offbox];
 }
 
@@ -811,6 +852,13 @@ export function remedyForFact(item: Fact): string {
 	}
 	if (item.id === "offbox") {
 		return "run the off-box sync and inspect its log";
+	}
+	if (item.id === "offbox-auth") {
+		const remedy =
+			typeof item.data === "object" && item.data !== null ? (item.data as Record<string, unknown>).remedy : undefined;
+		if (remedy === "reauthenticate") return "re-run `packbat init` and reconnect this destination";
+		if (remedy === "repair-client") return "update Packbat, then re-run `packbat init`";
+		return "inspect the managed rclone configuration and retry";
 	}
 	return "inspect this check and retry";
 }

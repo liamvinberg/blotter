@@ -1,5 +1,3 @@
-import { writePrivateFile } from "../core/private-file.js";
-
 export interface S3RemoteInput {
 	endpoint?: string;
 	accessKeyId: string;
@@ -76,8 +74,4 @@ export function renderDropboxRemote(input: DropboxRemoteInput, remoteName = mana
 		`client_id = ${input.appKey}`,
 		`token = ${JSON.stringify(input.token)}`,
 	]);
-}
-
-export async function writeManagedRcloneConfig(path: string, contents: string): Promise<void> {
-	await writePrivateFile(path, contents);
 }

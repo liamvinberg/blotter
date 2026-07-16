@@ -1,6 +1,6 @@
 import { accessSync, constants } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { discoverRclone, joinRcloneDestination } from "./rclone.js";
+import { classifyRcloneOAuthFailure, discoverRclone, joinRcloneDestination } from "./rclone.js";
 
 const wellKnownRclone = ["/opt/homebrew/bin/rclone", "/usr/local/bin/rclone", "/usr/bin/rclone"].find((path) => {
 	try {
@@ -19,6 +19,18 @@ describe("rclone destinations", () => {
 		expect(joinRcloneDestination("backup:bucket/root/", "machine/index.jsonl.age")).toBe(
 			"backup:bucket/root/machine/index.jsonl.age",
 		);
+	});
+
+	test("classifies OAuth grant expiry separately from client repair", () => {
+		expect(classifyRcloneOAuthFailure("oauth2: cannot fetch token: 400 invalid_grant")).toEqual({
+			kind: "grant",
+			errorClass: "invalid_grant",
+		});
+		expect(classifyRcloneOAuthFailure("oauth2: unauthorized_client")).toEqual({
+			kind: "client",
+			errorClass: "unauthorized_client",
+		});
+		expect(classifyRcloneOAuthFailure("network timeout")).toBeNull();
 	});
 
 	test.skipIf(wellKnownRclone === undefined)("finds rclone in a well-known location after PATH search", async () => {
