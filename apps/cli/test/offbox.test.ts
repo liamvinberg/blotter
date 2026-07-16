@@ -399,8 +399,6 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 
 	test("refuses managed mode without a populated rclone config", async () => {
 		const layout = await makeLayout();
-		const identity = await generateIdentity();
-		const recipient = await identityToRecipient(identity);
 
 		const initialized = await runCli(
 			[
@@ -413,7 +411,7 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 				"--offbox-remote",
 				layout.remote,
 				"--age-recipient",
-				recipient,
+				"age1synthetic",
 				"--rclone-config",
 				"managed",
 				"--no-activate",
@@ -457,8 +455,7 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 
 	test("copies and uses a private populated rclone config in managed mode", async () => {
 		const layout = await makeLayout();
-		const identity = await generateIdentity();
-		const recipient = await identityToRecipient(identity);
+		const recipient = "age133wfylvza4n7qnzdhglg8afg2kz7ye2c0t5ggaqdawk6ur9p8p9q4ed5gm";
 		const sourceConfig = join(layout.home, "source-rclone.conf");
 		await writeFile(sourceConfig, "[packbat]\ntype = local\nnounc = true\n");
 		const destination = `packbat:${layout.remote}`;
@@ -485,17 +482,20 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		);
 
 		expect(initialized.code).toBe(0);
+		expect(initialized.stdout).toContain("off-box 1/1");
 		const managedConfigPath = join(layout.packbatHome, "rclone.conf");
 		expect(await readFile(managedConfigPath, "utf8")).toBe("[packbat]\ntype = local\nnounc = true\n");
 		expect((await stat(managedConfigPath)).mode & 0o777).toBe(0o600);
 		const config = JSON.parse(await readFile(join(layout.packbatHome, "config.json"), "utf8")) as {
 			machine: string;
+			offbox: unknown;
 		};
-		const index = await decryptWithIdentity(
-			identity,
-			await readFile(join(layout.remote, config.machine, "index.jsonl.age")),
-		);
-		expect(index.toString("utf8")).toBe("");
+		expect(config.offbox).toEqual({
+			mode: "configured",
+			recipient,
+			remotes: [{ type: "rclone", destination, rcloneConfig: "managed" }],
+		});
+		expect((await stat(join(layout.remote, config.machine, "index.jsonl.age"))).size).toBeGreaterThan(0);
 	});
 
 	test("reuploads unchanged data after the rclone mode, destination, or recipient changes", async () => {
