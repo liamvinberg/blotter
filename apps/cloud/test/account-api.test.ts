@@ -5,10 +5,12 @@ interface TokenResponse {
 	accessToken: string;
 	accessTokenExpiresAt: string;
 	account: {
+		graceEndsAt: string | null;
 		githubLogin?: string;
 		id: string;
 		quotaBytes: number;
 		reservedBytes: number;
+		subscriptionState: "active" | "grace" | "inactive";
 		usedBytes: number;
 	};
 	refreshToken: string;
@@ -57,9 +59,11 @@ describe("GitHub exchange", () => {
 
 		expect(first).toMatchObject({
 			account: {
+				graceEndsAt: null,
 				githubLogin: "octocat",
 				quotaBytes: 100_000_000_000,
 				reservedBytes: 0,
+				subscriptionState: "inactive",
 				usedBytes: 0,
 			},
 			tokenType: "Bearer",
@@ -189,6 +193,11 @@ describe("account deletion", () => {
 			env.DB.prepare(
 				"INSERT INTO billing_customers (user_id, provider, provider_customer_id, created_at) VALUES (?, 'stripe', ?, ?)",
 			).bind(userId, "cus_test", currentTime),
+			env.DB.prepare("INSERT INTO service_alerts (key, user_id, last_emitted_at) VALUES (?, ?, ?)").bind(
+				`rate_limited:api_requests:${userId}`,
+				userId,
+				currentTime,
+			),
 		]);
 		const prefix = `users/${account?.storage_prefix}/`;
 		await Promise.all([
@@ -223,9 +232,12 @@ describe("account deletion", () => {
 
 		for (const table of [
 			"billing_customers",
+			"billing_subscriptions",
 			"cli_credentials",
 			"machine_remotes",
 			"object_ledger",
+			"service_alerts",
+			"stripe_webhook_events",
 			"upload_reservations",
 			"users",
 		]) {
