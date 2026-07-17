@@ -15,6 +15,7 @@ import type { PackbatHome } from "../core/home.js";
 import { readDerivedIndex } from "../core/index.js";
 import type { RunStamp } from "../core/stamps.js";
 import { probeOAuthRemote } from "../offbox/oauth-doctor.js";
+import { createArchiveRemote } from "../offbox/remote.js";
 import { CRON_MARKER, generateCronEntry } from "../schedule/cron.js";
 import { generateLaunchdPlist, LAUNCHD_LABEL } from "../schedule/launchd.js";
 import { generateSystemdService, generateSystemdTimer, SYSTEMD_SERVICE, SYSTEMD_TIMER } from "../schedule/systemd.js";
@@ -74,6 +75,10 @@ export interface HarnessTally {
 	files: number;
 	storedBytes: number;
 }
+
+export type MirrorStamp =
+	| { v: 1; ok: true; lastPulledAt: string; machines: number; pulled: number }
+	| { v: 1; ok: false; error: string; lastPulledAt: string; machines: number; pulled: number };
 
 function fact(id: string, status: Fact["status"], detail: string, data?: unknown): Fact {
 	return { id, title: id, status, detail, ...(data === undefined ? {} : { data }) };
@@ -855,6 +860,66 @@ export async function collectEnvironmentFacts(context: DoctorContext): Promise<F
 	const compression = compressionFact();
 	const offbox = await checkOffbox(context, true);
 	return [...unsupported, readable, writable, disk, compression, ...offbox];
+}
+
+export function isMirrorStamp(value: unknown): value is MirrorStamp {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as Record<string, unknown>;
+	return (
+		record.v === 1 &&
+		(record.ok === true ? record.error === undefined : record.ok === false && typeof record.error === "string") &&
+		typeof record.lastPulledAt === "string" &&
+		!Number.isNaN(Date.parse(record.lastPulledAt)) &&
+		Number.isInteger(record.machines) &&
+		(record.machines as number) >= 0 &&
+		Number.isInteger(record.pulled) &&
+		(record.pulled as number) >= 0
+	);
+}
+
+export async function mirrorFacts(home: PackbatHome, config: PackbatConfig): Promise<Fact[]> {
+	if (config.offbox.mode !== "configured") {
+		return [];
+	}
+	const facts: Fact[] = [];
+	for (const remoteConfig of config.offbox.remotes) {
+		const remote = createArchiveRemote(home, remoteConfig);
+		if (!remote.supportsMirror) {
+			continue;
+		}
+		const destination = remoteDestination(remoteConfig);
+		let stamp: MirrorStamp | null = null;
+		try {
+			const value: unknown = JSON.parse(
+				await readFile(join(remoteStatePath(home, remoteConfig), "mirror.json"), "utf8"),
+			);
+			stamp = isMirrorStamp(value) ? value : null;
+		} catch (error) {
+			if (!isEnoent(error) && !(error instanceof SyntaxError)) {
+				throw error;
+			}
+		}
+		facts.push(
+			stamp === null
+				? fact("mirror", "info", `${destination} · not yet run`)
+				: stamp.ok
+					? fact(
+							"mirror",
+							"info",
+							`${destination} · ${stamp.machines} ${stamp.machines === 1 ? "machine" : "machines"} seen · last pulled ${stamp.lastPulledAt}`,
+							{ destination, ...stamp },
+						)
+					: fact(
+							"mirror",
+							"problem",
+							`${destination} · last mirror failed: ${stamp.error}`, // DRAFT copy
+							{ destination, ...stamp },
+						),
+		);
+	}
+	return facts;
 }
 
 export async function readHarnessTallies(context: DoctorContext): Promise<HarnessTally[]> {

@@ -561,7 +561,7 @@ describe("packbat restore", () => {
 		expect(await readFile(localPath, "utf8")).toBe("different local session bytes\n");
 	});
 
-	test("refuses to restore a foreign OpenCode snapshot into this machine's live database", async () => {
+	test("restores a foreign OpenCode snapshot into absence and refuses a live local database", async () => {
 		const layout = await makeLayout();
 		await writeConfig(layout, layout.packbatHome, "newbox");
 		const foreignPackbatHome = join(layout.home, "foreign-packbat");
@@ -577,15 +577,30 @@ describe("packbat restore", () => {
 		} finally {
 			fixture.database.close();
 		}
+		const snapshotRoot = join(layout.archiveRoot, "oldbox", "opencode", "snapshots");
+		const snapshotDirectories = await readdir(snapshotRoot);
+		expect(snapshotDirectories).toHaveLength(1);
+		const completedBackup = zstdDecompressSync(
+			await readFile(join(snapshotRoot, snapshotDirectories[0]!, "opencode.db.zst")),
+		);
 
-		const refused = await runCli(["restore", "--machine", "oldbox", fixture.id], {
+		const restored = await runCli(["restore", "--machine", "oldbox", fixture.id], {
+			home: layout.home,
+			env: layout.env,
+		});
+
+		expect(restored.code, restored.stderr).toBe(0);
+		expect(restored.stdout).toBe(`restored 1 file to ${layout.opencodeDb}\nopencode -s ${fixture.id}\n`);
+		expect(await readFile(layout.opencodeDb)).toEqual(completedBackup);
+
+		const refused = await runCli(["restore", "--force", "--machine", "oldbox", fixture.id], {
 			home: layout.home,
 			env: layout.env,
 		});
 
 		expect(refused.code).toBe(1);
 		expect(refused.stdout).toBe("");
-		expect(refused.stderr).toContain("cannot restore OpenCode sessions from another machine");
-		await expectMissing(layout.opencodeDb);
+		expect(refused.stderr).toContain(`restore requires an absent OpenCode database: ${layout.opencodeDb}`);
+		expect(await readFile(layout.opencodeDb)).toEqual(completedBackup);
 	});
 });

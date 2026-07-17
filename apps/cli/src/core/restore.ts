@@ -5,9 +5,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { HarnessId } from "../adapters/adapter.js";
 import { getAdapter } from "../adapters/registry.js";
 import { decompressBytes } from "./compress.js";
-import { loadConfig, type PackbatConfig } from "./config.js";
+import type { PackbatConfig } from "./config.js";
 import { errorMessage, PackbatError } from "./errors.js";
-import { resolveHome } from "./home.js";
 import {
 	type ArchiveIndexRecord,
 	type DatabaseSnapshotIndexRecord,
@@ -369,16 +368,7 @@ async function restoreDatabaseSnapshot(unit: ArchivedUnit): Promise<RestoreResul
 	};
 }
 
-export async function restoreArchivedUnit(
-	unit: ArchivedUnit,
-	force: boolean,
-	currentMachine?: string,
-): Promise<RestoreResult> {
-	const localMachine = currentMachine ?? loadConfig(resolveHome()).machine;
-	if (unit.harness === "opencode" && unit.machine !== localMachine) {
-		// DRAFT copy
-		throw new PackbatError("cannot restore OpenCode sessions from another machine into this machine's live database");
-	}
+export async function restoreArchivedUnit(unit: ArchivedUnit, force: boolean): Promise<RestoreResult> {
 	if (unit.kind === "db-snapshot") {
 		return await restoreDatabaseSnapshot(unit);
 	}
@@ -389,8 +379,9 @@ export async function restoreArchivedUnit(
 	const targetRoot = adapter.storeRoot(process.env, homedir());
 	const plans = unit.files.map((file): RestorePlan => {
 		// A foreign relPath is already expressed in the harness's native store layout. Claude Code's
-		// first segment is the encoded origin project path and must remain verbatim so the session
-		// surfaces when that origin project path is opened on this machine.
+		// first segment is the encoded origin project path and must remain verbatim. When the origin project
+		// path does not exist on this machine, the restored session file still lands under the encoded directory
+		// and surfaces once that project path is opened here.
 		const target = adapter.restoreTarget(targetRoot, file.relPath);
 		assertContained(targetRoot, target, "restore target");
 		return { file, target };

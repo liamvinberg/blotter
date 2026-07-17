@@ -25,6 +25,7 @@ export interface ArchiveRemote {
 	readonly config: RemoteConfig;
 	readonly destination: string;
 	readonly supportsMirror: boolean;
+	readonly mirrorHandleIsName: boolean;
 	indexExists(machine: string): Promise<boolean>;
 	putArchiveObjects(machine: string, sourceRoot: string): Promise<void>;
 	putIndex(machine: string, sourcePath: string): Promise<void>;
@@ -37,6 +38,7 @@ export interface ArchiveRemote {
 class RcloneArchiveRemote implements ArchiveRemote {
 	readonly destination: string;
 	readonly supportsMirror = true;
+	readonly mirrorHandleIsName = true;
 
 	constructor(readonly config: Extract<RemoteConfig, { type: "rclone" }>) {
 		this.destination = config.destination;
@@ -133,6 +135,7 @@ async function archiveCiphertexts(sourceRoot: string, machine: string): Promise<
 class CloudArchiveRemote implements ArchiveRemote {
 	readonly destination: string;
 	readonly supportsMirror = true;
+	readonly mirrorHandleIsName = false;
 	private sweepId = randomUUID();
 	private expectedArchiveCount = 0;
 	private mirrorHandles = new Set<string>();

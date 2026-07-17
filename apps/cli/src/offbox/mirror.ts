@@ -101,7 +101,6 @@ async function mirrorMachine(options: {
 	archiveRoot: string;
 	currentMachine: string;
 	handle: string;
-	handleIsName: boolean;
 }): Promise<MachineMirrorResult | null> {
 	await mkdir(options.archiveRoot, { recursive: true });
 	const temporaryIndexPath = join(options.archiveRoot, "index.jsonl");
@@ -113,7 +112,7 @@ async function mirrorMachine(options: {
 		await writeFile(decryptedIndexPath, indexBytes);
 		const index = await readIndex(decryptedIndexPath);
 		const indexedMachines = new Set([...index.records.values()].map((record) => record.machine));
-		const localMachine = options.handleIsName
+		const localMachine = options.remote.mirrorHandleIsName
 			? options.handle
 			: indexedMachines.size === 1
 				? indexedMachines.values().next().value
@@ -204,7 +203,7 @@ async function mirrorRemote(
 	let pulled = 0;
 	const errors: string[] = [];
 	for (const handle of machines) {
-		if (!machineNameIsSafe(handle) && remote.config.type !== "cloud") {
+		if (!machineNameIsSafe(handle) && remote.mirrorHandleIsName) {
 			errors.push(`${handle}: unsafe remote machine name`);
 			continue;
 		}
@@ -215,7 +214,6 @@ async function mirrorRemote(
 				archiveRoot: config.archiveRoot,
 				currentMachine: config.machine,
 				handle,
-				handleIsName: remote.config.type !== "cloud",
 			});
 			if (result === null) {
 				continue;
@@ -227,22 +225,27 @@ async function mirrorRemote(
 		}
 	}
 	const lastPulledAt = new Date().toISOString();
+	const error = errors.join("; ");
+	const outcome: RemoteMirrorOutcome =
+		errors.length === 0
+			? { destination: remote.destination, ok: true, lastPulledAt, machines: machines.length, pulled }
+			: {
+					destination: remote.destination,
+					ok: false,
+					error: `mirror: ${error}`,
+					lastPulledAt,
+					machines: machines.length,
+					pulled,
+				};
 	await writeAtomicJson(join(remoteStatePath(home, remote.config), "mirror.json"), {
 		v: 1,
+		ok: outcome.ok,
+		...(outcome.ok ? {} : { error }),
 		lastPulledAt,
 		machines: machines.length,
 		pulled,
 	});
-	return errors.length === 0
-		? { destination: remote.destination, ok: true, lastPulledAt, machines: machines.length, pulled }
-		: {
-				destination: remote.destination,
-				ok: false,
-				error: `mirror: ${errors.join("; ")}`,
-				lastPulledAt,
-				machines: machines.length,
-				pulled,
-			};
+	return outcome;
 }
 
 export async function mirrorOffbox(

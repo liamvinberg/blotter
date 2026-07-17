@@ -162,13 +162,7 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 		}
 		reportSummary(summary, output);
 		reportCloudUpdate();
-		return ok &&
-			offboxFailures.length === 0 &&
-			mirrorFailures.length === 0 &&
-			offboxError === undefined &&
-			mirrorError === undefined
-			? 0
-			: 1;
+		return ok && offboxFailures.length === 0 && offboxError === undefined ? 0 : 1;
 	});
 	if (!locked.acquired) {
 		output.onBusy?.();

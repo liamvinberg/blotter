@@ -349,7 +349,42 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		expect(repeated.stdout).not.toContain("mirrored");
 		expect(
 			JSON.parse(await readFile(join(remoteStateDirectory(second.packbatHome, first.remote), "mirror.json"), "utf8")),
-		).toMatchObject({ v: 1, machines: 1, pulled: 0, lastPulledAt: expect.any(String) });
+		).toMatchObject({ v: 1, ok: true, machines: 1, pulled: 0, lastPulledAt: expect.any(String) });
+	});
+
+	test("pulls the same foreign machine once across two remotes", async () => {
+		const first = await makeLayout();
+		const second = await makeLayout();
+		const secondRemote = join(first.home, "second-remote");
+		const identity = await generateIdentity();
+		const recipient = await identityToRecipient(identity);
+		await makeClaudeStore(first.claudeRoot, { main: { mtimeMs: SOURCE_MTIME_MS }, sidecars: [] });
+		const remotes = [first.remote, secondRemote];
+		await writeConfiguredConfig(first, recipient, remotes, "machine-a");
+		expect((await runCli(["sync"], { home: first.home, env: first.env })).code).toBe(0);
+		await writeConfiguredConfig(second, recipient, remotes, "machine-b");
+		await writeFile(join(second.packbatHome, "identity.txt"), `${identity}\n`);
+
+		const mirrored = await runCli(["sync"], { home: second.home, env: second.env });
+
+		expect(mirrored.code, mirrored.stderr).toBe(0);
+		expect(mirrored.stdout).toMatch(/, mirrored 1\n/u);
+		const stamps = await Promise.all(
+			remotes.map(
+				async (destination) =>
+					JSON.parse(
+						await readFile(join(remoteStateDirectory(second.packbatHome, destination), "mirror.json"), "utf8"),
+					) as { pulled: number },
+			),
+		);
+		expect(stamps.reduce((sum, stamp) => sum + stamp.pulled, 0)).toBe(1);
+		const firstMachineRoot = join(first.archiveRoot, "machine-a");
+		const secondMachineRoot = join(second.archiveRoot, "machine-a");
+		const expectedFiles = await listFiles(firstMachineRoot);
+		expect(await listFiles(secondMachineRoot)).toEqual(expectedFiles);
+		for (const path of expectedFiles) {
+			expect(await readFile(join(secondMachineRoot, path))).toEqual(await readFile(join(firstMachineRoot, path)));
+		}
 	});
 
 	test("refreshes a foreign machine index when its archive grows", async () => {
@@ -434,7 +469,7 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 
 		const mirrored = await runCli(["sync"], { home: second.home, env: second.env });
 
-		expect(mirrored.code).toBe(1);
+		expect(mirrored.code).toBe(0);
 		expect(mirrored.stderr).toContain(`off-box ${first.remote}: mirror:`);
 		expect(mirrored.stderr).toContain(`sha256 mismatch for machine-a/${corrupted.path}`);
 		expect(await readFile(join(second.archiveRoot, "machine-a", preserved.path))).toEqual(
@@ -444,7 +479,22 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 		await expect(stat(join(second.archiveRoot, "machine-a", "index.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
 		expect(
 			JSON.parse(await readFile(join(remoteStateDirectory(second.packbatHome, first.remote), "mirror.json"), "utf8")),
-		).toMatchObject({ machines: 1, pulled: 1 });
+		).toMatchObject({
+			ok: false,
+			error: expect.stringContaining(`sha256 mismatch for machine-a/${corrupted.path}`),
+			machines: 1,
+			pulled: 1,
+		});
+
+		const doctor = await runCli(["doctor", "--json"], { home: second.home, env: second.env });
+		const mirrorFact = (
+			JSON.parse(doctor.stdout) as { facts: Array<{ id: string; status: string; detail: string }> }
+		).facts.find((fact) => fact.id === "mirror");
+		expect(mirrorFact).toMatchObject({
+			status: "problem",
+			detail: expect.stringContaining(`${first.remote} · last mirror failed:`),
+		});
+		expect(mirrorFact?.detail).toContain(`sha256 mismatch for machine-a/${corrupted.path}`);
 	});
 
 	test("skips mirroring without a resident identity", async () => {
