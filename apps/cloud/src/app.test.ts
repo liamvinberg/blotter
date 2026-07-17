@@ -1,6 +1,5 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compareVersions } from "./versions.js";
 
 interface MutableVersionBindings {
 	MIN_CLI_VERSION?: string;
@@ -16,12 +15,28 @@ afterEach(() => {
 });
 
 describe("CLI versions", () => {
-	it("compares numeric versions, prereleases, and malformed parts", () => {
-		expect(compareVersions("1.2.3", "1.2.4")).toBe(-1);
-		expect(compareVersions("2.0.0-beta.1", "1.99.99")).toBe(1);
-		expect(compareVersions("1.2.3-canary", "1.2.3")).toBe(0);
-		expect(compareVersions("1.2", "1.2.0")).toBe(0);
-		expect(compareVersions("1.invalid.3", "1.0.3")).toBe(0);
+	it("reads prerelease and malformed client versions through the gate and headers", async () => {
+		versionBindings.MIN_CLI_VERSION = "0.1.0";
+		versionBindings.NPM_REGISTRY_URL = "https://registry-parsing.test";
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ version: "9.9.9" }));
+
+		const prerelease = await exports.default.fetch("https://api.packbat.dev/v1/client", {
+			headers: { "x-packbat-cli-version": "0.1.0-canary.1" },
+		});
+		expect(prerelease.status).toBe(200);
+		expect(prerelease.headers.get("x-packbat-cli-update")).toBe("9.9.9");
+
+		const equalPrerelease = await exports.default.fetch("https://api.packbat.dev/v1/client", {
+			headers: { "x-packbat-cli-version": "9.9.9-beta.2" },
+		});
+		expect(equalPrerelease.status).toBe(200);
+		expect(equalPrerelease.headers.get("x-packbat-cli-update")).toBeNull();
+
+		const malformed = await exports.default.fetch("https://api.packbat.dev/v1/client", {
+			headers: { "x-packbat-cli-version": "0.invalid.9" },
+		});
+		expect(malformed.status).toBe(426);
+		expect(await malformed.json()).toEqual({ error: "cli_outdated" });
 	});
 
 	it("gates outdated clients before public and authenticated routes", async () => {

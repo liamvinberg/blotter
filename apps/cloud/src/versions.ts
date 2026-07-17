@@ -1,6 +1,8 @@
+import { z } from "zod";
+
 const DEFAULT_NPM_REGISTRY_URL = "https://registry.npmjs.org";
 const LATEST_VERSION_TTL_MS = 60 * 60 * 1_000;
-const VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
+const latestVersionSchema = z.looseObject({ version: z.string().regex(/^\d+\.\d+\.\d+$/u) });
 
 interface VersionBindings {
 	NPM_REGISTRY_URL?: string;
@@ -30,10 +32,8 @@ async function fetchLatestVersion(registryBaseUrl: string): Promise<string | nul
 	try {
 		const response = await fetch(`${registryBaseUrl}/packbat/latest`, { signal: AbortSignal.timeout(2_000) });
 		if (!response.ok) return null;
-		const body: unknown = await response.json();
-		if (typeof body !== "object" || body === null || !("version" in body)) return null;
-		const version = (body as { version?: unknown }).version;
-		return typeof version === "string" && VERSION_PATTERN.test(version) ? version : null;
+		const result = latestVersionSchema.safeParse(await response.json());
+		return result.success ? result.data.version : null;
 	} catch {
 		return null;
 	}
