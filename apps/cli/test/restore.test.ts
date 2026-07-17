@@ -12,6 +12,7 @@ import {
 	makeOpenCodeStore,
 	makePiStore,
 } from "./helpers/fixtures.js";
+import { writeArchivedBytes } from "./helpers/retrieval-fixtures.js";
 import { makeTempHome, runCli } from "./helpers/run-cli.js";
 
 const MACHINE = "test-machine";
@@ -508,5 +509,83 @@ describe("packbat restore", () => {
 		expect(restored.code).toBe(0);
 		expect(restored.stdout).toContain(`restored 1 file to ${layout.codexRoot}`);
 		await expectRestored(layout.codexRoot, snapshot);
+	});
+
+	test("restores a foreign Claude session under the local store root and preserves its encoded project path", async () => {
+		const layout = await makeLayout();
+		await writeConfig(layout, layout.packbatHome, "newbox");
+		const foreignMachine = "oldbox";
+		const foreignClaudeRoot = join(layout.home, "foreign-home", ".claude", "projects");
+		const encodedCwd = "-Users-oldbox-work-origin-project";
+		const fixture = await makeClaudeStore(foreignClaudeRoot, {
+			encodedCwd,
+			main: { mtimeMs: SOURCE_MTIME_MS },
+			sidecars: [],
+		});
+		const raw = await readFile(fixture.files[0]!.absPath);
+		await writeArchivedBytes({
+			layout,
+			machine: foreignMachine,
+			harness: "claude-code",
+			unit: fixture.id,
+			relPath: fixture.files[0]!.relPath,
+			role: "main",
+			source: fixture.files[0]!.absPath,
+			raw,
+			mtimeMs: SOURCE_MTIME_MS,
+			includeIndex: true,
+		});
+
+		const restored = await runCli(["restore", "--machine", foreignMachine, fixture.id], {
+			home: layout.home,
+			env: layout.env,
+		});
+
+		const localPath = join(layout.claudeRoot, encodedCwd, `${fixture.id}.jsonl`);
+		expect(restored.code, restored.stderr).toBe(0);
+		expect(restored.stdout).toContain(`restored 1 file to ${layout.claudeRoot}`);
+		expect(await readFile(localPath)).toEqual(raw);
+		await expectMissing(join(layout.claudeRoot, "-Users-newbox-work-origin-project", `${fixture.id}.jsonl`));
+
+		await writeFile(localPath, "different local session bytes\n");
+		const newer = new Date(SOURCE_MTIME_MS + 60_000);
+		await utimes(localPath, newer, newer);
+		const refused = await runCli(["restore", "--machine", foreignMachine, fixture.id], {
+			home: layout.home,
+			env: layout.env,
+		});
+
+		expect(refused.code).toBe(1);
+		expect(refused.stdout).toBe("");
+		expect(refused.stderr).toContain(localPath);
+		expect(await readFile(localPath, "utf8")).toBe("different local session bytes\n");
+	});
+
+	test("refuses to restore a foreign OpenCode snapshot into this machine's live database", async () => {
+		const layout = await makeLayout();
+		await writeConfig(layout, layout.packbatHome, "newbox");
+		const foreignPackbatHome = join(layout.home, "foreign-packbat");
+		const foreignDatabase = join(layout.home, "foreign-home", "opencode", "opencode.db");
+		await writeConfig(layout, foreignPackbatHome, "oldbox");
+		const fixture = await makeOpenCodeStore(foreignDatabase, { version: "1.17.5" });
+		try {
+			const synced = await runCli(["sync"], {
+				home: layout.home,
+				env: { ...layout.env, PACKBAT_HOME: foreignPackbatHome, OPENCODE_DB: foreignDatabase },
+			});
+			expect(synced.code, synced.stderr).toBe(0);
+		} finally {
+			fixture.database.close();
+		}
+
+		const refused = await runCli(["restore", "--machine", "oldbox", fixture.id], {
+			home: layout.home,
+			env: layout.env,
+		});
+
+		expect(refused.code).toBe(1);
+		expect(refused.stdout).toBe("");
+		expect(refused.stderr).toContain("cannot restore OpenCode sessions from another machine");
+		await expectMissing(layout.opencodeDb);
 	});
 });

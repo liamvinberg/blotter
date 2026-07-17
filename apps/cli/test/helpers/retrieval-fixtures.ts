@@ -63,6 +63,7 @@ export async function writeArchivedBytes(options: {
 	unit: string;
 	relPath: string;
 	role: FileRole;
+	source?: string;
 	raw: Buffer;
 	mtimeMs?: number;
 	includeIndex: boolean;
@@ -85,7 +86,7 @@ export async function writeArchivedBytes(options: {
 		machine: options.machine,
 		unit: options.unit,
 		role: options.role,
-		source: `/synthetic/${options.relPath}`,
+		source: options.source ?? `/synthetic/${options.relPath}`,
 		sourceMtimeMs: storedStats.mtimeMs,
 		sourceSize: options.raw.byteLength,
 		storedSize: stored.byteLength,

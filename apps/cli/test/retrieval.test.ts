@@ -123,6 +123,31 @@ describe("packbat retrieval", () => {
 		});
 	});
 
+	test("ends human search and show output with restore hints without changing JSON", async () => {
+		const test = await layout();
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: [{ type: "user", message: { role: "user", content: "restore hint needle" } }],
+		});
+
+		const humanSearch = await command(test, ["search", "needle"]);
+		const jsonSearch = await command(test, ["search", "needle", "--json"]);
+		const humanShow = await command(test, ["show", CLAUDE_ID]);
+		const jsonShow = await command(test, ["show", CLAUDE_ID, "--json"]);
+
+		expect(humanSearch.code, humanSearch.stderr).toBe(0);
+		expect(humanSearch.stdout).toMatch(new RegExp(`Restore the first result with packbat restore ${CLAUDE_ID}\\n$`));
+		expect(() => JSON.parse(jsonSearch.stdout)).not.toThrow();
+		expect(jsonSearch.stdout).not.toContain("Restore the first result");
+		expect(humanShow.code, humanShow.stderr).toBe(0);
+		expect(humanShow.stdout).toMatch(new RegExp(`Restore this session with packbat restore ${CLAUDE_ID}\\n$`));
+		expect(() => JSON.parse(jsonShow.stdout)).not.toThrow();
+		expect(jsonShow.stdout).not.toContain("Restore this session");
+	});
+
 	test("keeps known records around unknown and malformed middle and final lines", async () => {
 		const test = await layout();
 		await writeArchivedJsonl({

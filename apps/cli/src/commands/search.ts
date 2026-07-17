@@ -175,6 +175,12 @@ export async function runSearch(argv: string[]): Promise<number> {
 				process.stdout.write(`${JSON.stringify({ v: 1, query: options.query, filters, ...result })}\n`);
 			} else {
 				for (const hit of result.results) printHit(hit);
+				const first = result.results[0];
+				if (first !== undefined) {
+					const machineFlag = first.machine === config.machine ? "" : `--machine ${first.machine} `;
+					// DRAFT copy
+					process.stdout.write(`Restore the first result with packbat restore ${machineFlag}${first.unit}\n`);
+				}
 			}
 			return 0;
 		} finally {

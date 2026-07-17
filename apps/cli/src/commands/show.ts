@@ -38,7 +38,7 @@ function parseOptions(argv: string[]): { value: string; json: boolean } | null {
 	return { value, json };
 }
 
-function printShow(result: ShowResult): void {
+function printShow(result: ShowResult, localMachine: string): void {
 	// DRAFT copy
 	process.stdout.write(`${result.unit.key}\n`);
 	process.stdout.write(`${result.unit.harness} · ${result.unit.machine}\n`);
@@ -51,6 +51,9 @@ function printShow(result: ShowResult): void {
 		if (turn.filesTouched.length > 0) process.stdout.write(`files: ${turn.filesTouched.join(", ")}\n`);
 		if (turn.commands.length > 0) process.stdout.write(`commands: ${turn.commands.join(" | ")}\n`);
 	}
+	const machineFlag = result.unit.machine === localMachine ? "" : `--machine ${result.unit.machine} `;
+	// DRAFT copy
+	process.stdout.write(`\nRestore this session with packbat restore ${machineFlag}${result.unit.id}\n`);
 }
 
 export async function runShow(argv: string[]): Promise<number> {
@@ -63,6 +66,6 @@ export async function runShow(argv: string[]): Promise<number> {
 	const unit = resolveShowUnit(await readArchiveCatalog(config), options.value);
 	const result = await readShowUnit(unit);
 	if (options.json) process.stdout.write(`${JSON.stringify(result)}\n`);
-	else printShow(result);
+	else printShow(result, config.machine);
 	return 0;
 }
