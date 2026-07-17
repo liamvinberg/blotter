@@ -31,6 +31,7 @@ interface DoctorJson {
 	v: 1;
 	ok: boolean;
 	machine: string;
+	version: string;
 	facts: JsonFact[];
 }
 
@@ -67,7 +68,12 @@ describe("packbat doctor", () => {
 		});
 
 		const report = JSON.parse(result.stdout) as DoctorJson;
-		expect(report).toMatchObject({ v: 1, machine: expect.any(String), ok: result.code === 0 });
+		expect(report).toMatchObject({
+			v: 1,
+			machine: expect.any(String),
+			version: expect.any(String),
+			ok: result.code === 0,
+		});
 		expect(report.facts.slice(0, 4).map(({ id }) => id)).toEqual(["installed", "live", "fresh", "reconciled"]);
 		expect(report.facts[4]).toMatchObject({
 			id: "retention",
