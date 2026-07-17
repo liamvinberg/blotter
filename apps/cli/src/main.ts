@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { runCloud } from "./commands/cloud.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runDropboxOAuth } from "./commands/dropbox-oauth.js";
@@ -9,6 +8,7 @@ import { runShow } from "./commands/show.js";
 import { runStatus } from "./commands/status.js";
 import { runSync } from "./commands/sync.js";
 import { PackbatError } from "./core/errors.js";
+import { packbatVersion } from "./core/version.js";
 
 // DRAFT copy. The command block is pinned byte-for-byte by the retrieval contract.
 const HELP = `Packbat — every agent session, kept.
@@ -43,11 +43,6 @@ const commands: Record<string, (argv: string[]) => Promise<number>> = {
 	show: runShow,
 };
 
-function version(): string {
-	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-	return pkg.version;
-}
-
 // Piping into `head` (or any consumer that closes early) must end the process
 // quietly, not crash it.
 for (const stream of [process.stdout, process.stderr]) {
@@ -66,7 +61,7 @@ async function main(argv: string[]): Promise<number> {
 		return first === undefined ? 1 : 0;
 	}
 	if (first === "--version" || first === "-v") {
-		process.stdout.write(`${version()}\n`);
+		process.stdout.write(`${packbatVersion()}\n`);
 		return 0;
 	}
 	const command = commands[first];
