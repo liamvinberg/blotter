@@ -118,7 +118,9 @@ describe("hosted billing", () => {
 		const session = records[1];
 		expect(session?.headers.get("Idempotency-Key")).toBe(`packbat-checkout-${linked.account.id}-checkout-year`);
 		expect(Object.fromEntries(session?.parameters ?? [])).toMatchObject({
+			allow_promotion_codes: "true",
 			"automatic_tax[enabled]": "true",
+			cancel_url: env.STRIPE_CHECKOUT_CANCEL_URL,
 			client_reference_id: linked.account.id,
 			customer: "cus_packbat",
 			expires_at: expect.stringMatching(/^\d+$/u),
@@ -126,6 +128,7 @@ describe("hosted billing", () => {
 			"line_items[0][quantity]": "1",
 			mode: "subscription",
 			"subscription_data[metadata][packbat_user_id]": linked.account.id,
+			success_url: env.STRIPE_CHECKOUT_SUCCESS_URL,
 			"tax_id_collection[enabled]": "true",
 		});
 		expect(session?.parameters.has("subscription_data[trial_period_days]")).toBe(false);

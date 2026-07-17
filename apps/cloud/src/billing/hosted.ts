@@ -155,6 +155,7 @@ export async function createCheckout(
 		const customer = await ensureBillingCustomer(env, userId, now);
 		const priceId = interval === "month" ? env.STRIPE_MONTHLY_PRICE_ID : env.STRIPE_ANNUAL_PRICE_ID;
 		const parameters = new URLSearchParams({
+			allow_promotion_codes: "true",
 			"automatic_tax[enabled]": "true",
 			cancel_url: env.STRIPE_CHECKOUT_CANCEL_URL,
 			client_reference_id: userId,

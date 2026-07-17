@@ -52,7 +52,9 @@ bucket only; `R2_BUCKET_NAME` is the private bucket's configured name.
    distinct signing secret as `STRIPE_WEBHOOK_SECRET` and set `STRIPE_LIVEMODE=true` for production.
 5. Make both Checkout return pages real before launch. The success page tells the user to return to the terminal;
    the CLI continues only after `GET /v1/billing/status` reports `active`.
-6. Enable Stripe's failed-payment and cancellation emails. Stripe remains the only system holding the customer's
+6. Checkout accepts promotion codes. Use one 100%-off internal/friends coupon with individually limited promotion
+   codes rather than a single unrestricted shared code.
+7. Enable Stripe's failed-payment and cancellation emails. Stripe remains the only system holding the customer's
    email and therefore owns lapse notices.
 
 Stripe webhook signatures are checked over the untouched request body with Web Crypto and a five-minute timestamp
