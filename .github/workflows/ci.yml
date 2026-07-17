@@ -7,7 +7,9 @@ on:
 
 jobs:
   gates:
-    runs-on: ubuntu-latest
+    # macOS: the CLI suite is currently macOS-validated only; Linux support is
+    # tracked as its own work item (see the linux-suite issue).
+    runs-on: macos-latest
     timeout-minutes: 15
     concurrency:
       group: ci-${{ github.ref }}
@@ -22,7 +24,7 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       # The CLI test suite drives real destination flows against a real rclone binary.
-      - run: sudo apt-get update && sudo apt-get install --yes rclone
+      - run: brew install rclone
       - run: pnpm -C apps/cli typecheck
       - run: pnpm -C apps/cli test
       - run: pnpm -C apps/cloud typecheck

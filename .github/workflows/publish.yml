@@ -24,7 +24,8 @@ jobs:
   publish:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
+    # macOS to match ci.yml: the release gate reruns the macOS-validated suite.
+    runs-on: macos-latest
     permissions:
       contents: read
       id-token: write
@@ -40,7 +41,7 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       # The CLI test suite drives real destination flows against a real rclone binary.
-      - run: sudo apt-get update && sudo apt-get install --yes rclone
+      - run: brew install rclone
       - run: pnpm -C apps/cli typecheck
       - run: pnpm -C apps/cli test
       - run: pnpm check
