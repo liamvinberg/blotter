@@ -15,6 +15,8 @@ Status: implementation contract for GitHub issue [#19](https://github.com/liamvi
 | SQL surface | No supported raw-SQL command. The cache schema is an implementation detail even though the local file remains inspectable. |
 | Agent packaging | Ship one small Claude Code skill plus a copyable AGENTS.md snippet. Both call the CLI and treat retrieved text as untrusted history. |
 
+*(Amended 2026-07-18: the Freshness, Query surface, SQL surface, and Agent packaging rows are superseded in part by the [agent-funnel amendment](#amendment-the-agent-funnel-2026-07-18) below.)*
+
 The architectural flow is:
 
 ```text
@@ -170,7 +172,7 @@ Do not add `better-sqlite3`. Its own [installation contract](https://github.com/
 
 ### Refresh and rebuild
 
-`sync` continues to append only archive metadata and compressed raw files. It must not import a reader, decompress a transcript, or open `retrieval.sqlite`.
+`sync` continues to append only archive metadata and compressed raw files. It must not import a reader, decompress a transcript, or open `retrieval.sqlite`. *(Amended 2026-07-17 with sync-time indexing: `sync` now refreshes the retrieval cache best-effort after the sweep and off-box legs, so agents usually hit a warm index. Search-time refresh remains as the correctness backstop — see the agent-funnel amendment's Freshness row.)*
 
 Before every `search`, refresh the cache synchronously:
 
@@ -377,11 +379,15 @@ Show `--json` emits exactly one compact JSON object followed by `\n`:
 
 ### No raw-SQL lane
 
+*(Superseded 2026-07-18 by the [agent-funnel amendment](#amendment-the-agent-funnel-2026-07-18): `packbat query` ships a read-only SELECT lane, issue #53.)*
+
 Do not ship `packbat sql`, `--sql`, or a documented schema-access promise. Power users still own the local cache file and can open it themselves, but that is explicitly unsupported. Agents get FTS5 column queries, structured filters, search JSON, and show JSON.
 
 **Teach-back.** A supported SQL lane turns every table and query plan into public API, making a disposable cache hard to rebuild or reshape. It also invites agent-generated arbitrary queries when two safe read verbs already express the product job. The nearest benefit is flexible local analysis, which remains possible by inspecting the owned file without packbat promising compatibility. Verbs-only avoids freezing implementation details into agent prompts.
 
 ## 5. Spec amendment
+
+*(Amended 2026-07-18: the surface grows again — the seven-command sentence and pinned HELP block below are superseded by the [agent-funnel amendment](#amendment-the-agent-funnel-2026-07-18)'s Command surface.)*
 
 Replace “Five commands, nothing else” in issue #14's CLI-surface decision with:
 
@@ -405,6 +411,8 @@ The runtime requirement in the distribution decision changes from Node `>=22.15`
 **Teach-back.** The five-command limit protected v1 from speculative surface area; retrieval is now a named v2 product capability with two irreducible actions. Hiding it under `status`, `restore`, or raw SQL would blur command meanings and make agent use less predictable. Writing the amendment explicitly preserves the reason for the old closure instead of pretending it never existed. This avoids accidental command growth without treating a prior scope boundary as permanent architecture.
 
 ## 6. Skill packaging
+
+*(Superseded 2026-07-18: issue #54 rewrites the skill around the funnel; the untrusted-history and restore-to-temp rules carry over verbatim in spirit.)*
 
 The Claude Code deliverable should be a single personal skill at `~/.claude/skills/packbat-retrieval/SKILL.md`; project installation may use `.claude/skills/packbat-retrieval/SKILL.md`. Those are the current official [personal and project skill locations](https://code.claude.com/docs/en/slash-commands#where-skills-live). It needs no script wrapper because the stable CLI JSON is the integration surface.
 
@@ -451,3 +459,68 @@ No design question blocks implementation. Two measurements remain implementation
 
 1. Run the first dogfood rebuild to replace the stated compression/extraction assumptions with actual elapsed time and cache bytes. Do not retain or publish corpus content.
 2. Revisit the accepted `node:sqlite` experimental warning when the general runtime floor can move to Node 26; do not add a warning-suppression shim or native SQLite dependency solely for cosmetics.
+
+## Amendment: the agent funnel (2026-07-18)
+
+Status: contract, from design session [#49](https://github.com/liamvinberg/packbat/issues/49); every verdict Liam's. Build tickets [#50](https://github.com/liamvinberg/packbat/issues/50)–[#54](https://github.com/liamvinberg/packbat/issues/54) under map #15. This section supersedes the sections and rows marked above; everything unmarked stands.
+
+The consumer this amendment optimizes for is an LLM agent with a context window. Every retrieval verb must answer in a bounded number of tokens and, whenever output was cut, state exactly how to get the rest. The funnel:
+
+```text
+sessions / search      find candidates cheaply        (cache)
+        |
+     outline           skim one session, line per turn (raw read)
+        |
+   show --turns        extract exactly the turns needed (raw read)
+        |
+      query            read-only SQL tail for the rest  (cache)
+```
+
+### Decision summary
+
+| Question | Pinned decision |
+|---|---|
+| Surface | CLI only; the shipped skill teaches the funnel. No MCP server, no embeddings, no remote-only search (that stays the #34 dashboard lane). |
+| Search role default | Only `user` and `assistant` turns match by default — tool output is ~90% of the index and was drowning bm25. When excluded roles also match, plain output appends one hint line with per-role counts and the `--role` rerun; `--json` carries an `excluded` object. New `--role user\|assistant\|tool\|summary\|all`; no hint when `--role` is explicit. |
+| Search bound | Default 20 hits, `--limit <n>` caps at 200. `truncated` semantics and the 320-code-point snippet stand. |
+| `show` | Capped by default at the shared budget; `--turns <a:b>` selects ranges; `--all` lifts the cap. Truncation names the exact resume range. Raw-read, no lock, as before. |
+| `outline` | New verb: header (key, harness, machine, projects, span, turn count, total text size) then one line per turn — ordinal, role, timestamp, text size, first ~80 chars flattened. Raw-read like `show`, same `--turns` and budget contract. Purely mechanical; no LLM in the archive path, ever. |
+| `sessions` | New verb: session-level discovery over the cache, newest `updated_at` first (timestampless sessions last). Filters `--project` (exact absolute path), `--since`, `--harness`, `--machine`, `--file <substring>`, `--command <substring>` (case-insensitive substring over stored values); `--limit` default 20, max 200. |
+| SQL lane | Supersedes “No raw-SQL lane”: `query <select-sql>` refreshes, reopens the cache read-only, runs exactly one SELECT (WITH allowed), returns at most 200 rows plus a cap notice. The read-only connection is the enforcement; the pinned v1 schema graduates to documented-for-agents, still versioned by `user_version` with rebuild-on-mismatch. |
+| Agent output | Terse plain text is the primary agent interface on every retrieval verb — fewer tokens than JSON and a stable line grammar. `--json` v1 envelopes remain the scripting contract. Both formats carry the continue affordance on every truncation. |
+| Freshness | Records the shipped 2026-07-17 change: `sync` refreshes the cache best-effort post-sweep; `search`/`sessions`/`query` still refresh before answering; `show`/`outline` stay raw-read. Cache-opening verbs wait up to 15 s on the retrieval lock (polling) before the existing failure, so the hourly sync never hard-fails an agent mid-funnel. |
+| Budgets | One shared default budget of 30,000 characters of turn text per invocation for `show` and `outline`; constants live in one place. All new user-facing strings land `// DRAFT` for the register pass. |
+| Scale | Tool text stays indexed. The cache grows with the union of machines the mirror leg pulls; accepted — it is a disposable, local-only cache and never syncs. |
+
+### Command surface
+
+The visible surface grows seven → ten. Replace the pinned `Commands:` block of `src/main.ts` HELP with exactly:
+
+```text
+Commands:
+  init      set up archiving: detect harnesses, schedule the sweep, off-box or skip
+  sync      run one sweep now (the scheduled job runs this)
+  doctor    prove the schedule is alive and nothing is being missed
+  restore   put an archived session back where its harness resumes it
+  status    one-screen health summary
+  search    find text across archived sessions
+  sessions  list archived sessions, newest first
+  outline   skim one archived session, one line per turn
+  show      read turns from one archived session
+  query     run one read-only SELECT against the search cache
+```
+
+Pinned usage lines:
+
+```text
+Usage: packbat search <query> [--role <role>] [--harness <id>] [--machine <name>] [--project <path>] [--since <RFC3339>] [--limit <n>] [--json]
+       packbat search --rebuild [--json]
+Usage: packbat sessions [--project <path>] [--since <RFC3339>] [--harness <id>] [--machine <name>] [--file <substring>] [--command <substring>] [--limit <n>] [--json]
+Usage: packbat outline <unit-or-key> [--turns <a:b>] [--json]
+Usage: packbat show <unit-or-key> [--turns <a:b>] [--all] [--json]
+Usage: packbat query <select-sql> [--json]
+```
+
+`--turns` accepts `a:b` (inclusive), `a:`, `:b`, or a single ordinal, in the zero-based turn ordinals search and outline print. JSON envelopes follow the existing conventions (`v: 1`, nullable fields present as `null`, arrays present); the build tickets pin exact shapes, which are contract once landed.
+
+**Teach-back.** Prose-default search exists because bm25 over everything let a megabyte tool dump outrank the sentence the user actually remembers; scoping ranking to prose makes results predictable, and the hint line keeps error-output recall one explicit flag away. No embeddings because an agent retrying three query phrasings costs near nothing and beats maintaining a second index with a model dependency at personal-corpus scale. Read-only SQL is safe to support now because the schema was already pinned as v1 contract: a read-only connection makes the cache unwritable, and rebuild-on-mismatch means an old agent query can only fail loudly, never corrupt. Budgets with continue-hints turn every verb into a pageable read, which is what a context window actually needs.
