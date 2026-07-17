@@ -161,6 +161,30 @@ describe("packbat sync", () => {
 		}
 	});
 
+	test("refreshes retrieval so the next search only reads the warm database", async () => {
+		const layout = await makeLayout();
+		await writeConfig(layout);
+		await makeClaudeStore(layout.claudeRoot, {
+			main: { mtimeMs: SOURCE_MTIME_MS },
+			sidecars: [],
+		});
+
+		const synced = await runCli(["sync"], { home: layout.home, env: layout.env });
+
+		expect(synced.code, synced.stderr).toBe(0);
+		const databasePath = join(layout.packbatHome, "cache", "retrieval.sqlite");
+		const beforeSearch = await stat(databasePath);
+
+		const searched = await runCli(["search", "fixture"], { home: layout.home, env: layout.env });
+
+		expect(searched.code, searched.stderr).toBe(0);
+		expect(searched.stdout).toContain("Synthetic fixture prompt.");
+		expect(await stat(databasePath)).toMatchObject({
+			mtimeMs: beforeSearch.mtimeMs,
+			size: beforeSearch.size,
+		});
+	});
+
 	test("archives pi sessions directly inside an explicit session directory", async () => {
 		const layout = await makeLayout();
 		await writeConfig(layout);
@@ -386,6 +410,31 @@ describe("packbat sync", () => {
 		expect(result.stdout).toContain("already running");
 		await expect(stat(layout.archiveRoot)).rejects.toMatchObject({ code: "ENOENT" });
 		expect(await stat(lockPath)).toBeDefined();
+	});
+
+	test("skips a busy retrieval refresh and search repairs it later", async () => {
+		const layout = await makeLayout();
+		await writeConfig(layout);
+		await makeClaudeStore(layout.claudeRoot, {
+			main: { mtimeMs: SOURCE_MTIME_MS },
+			sidecars: [],
+		});
+		const lockPath = join(layout.packbatHome, "state", "retrieval.lock");
+		await mkdir(dirname(lockPath), { recursive: true });
+		await writeFile(lockPath, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`);
+
+		const synced = await runCli(["sync"], { home: layout.home, env: layout.env });
+
+		expect(synced.code, synced.stderr).toBe(0);
+		const databasePath = join(layout.packbatHome, "cache", "retrieval.sqlite");
+		await expect(stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
+
+		await rm(lockPath);
+		const searched = await runCli(["search", "fixture"], { home: layout.home, env: layout.env });
+
+		expect(searched.code, searched.stderr).toBe(0);
+		expect(searched.stdout).toContain("Synthetic fixture prompt.");
+		expect(await stat(databasePath)).toBeDefined();
 	});
 
 	test("removes a dead lock and proceeds", async () => {

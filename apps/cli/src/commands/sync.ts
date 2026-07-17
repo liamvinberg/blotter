@@ -1,12 +1,13 @@
 import { cloudUpdateAvailableVersion } from "../cloud/api-fetch.js";
 import { sweep } from "../core/archive.js";
 import { assertZstdSupport } from "../core/compress.js";
-import { loadConfig } from "../core/config.js";
-import { resolveHome } from "../core/home.js";
-import { withSyncLock } from "../core/lock.js";
+import { loadConfig, type PackbatConfig } from "../core/config.js";
+import { resolveHome, type PackbatHome } from "../core/home.js";
+import { withRetrievalLock, withSyncLock } from "../core/lock.js";
 import { appendLog } from "../core/log.js";
 import { writeRunStamps } from "../core/stamps.js";
 import { publishOffbox, type RemotePublishOutcome, remindOffboxSkipped } from "../offbox/outbox.js";
+import { assertFts5, closeDatabase, openAndRefresh } from "../retrieval/database.js";
 
 const USAGE = "Usage: packbat sync\n";
 
@@ -32,6 +33,27 @@ function reportCloudUpdate(): void {
 
 function offboxSummary(outcomes: RemotePublishOutcome[]): string {
 	return `off-box ${outcomes.filter((outcome) => outcome.ok).length}/${outcomes.length}`; // DRAFT copy
+}
+
+async function refreshRetrievalIndex(home: PackbatHome, config: PackbatConfig): Promise<void> {
+	try {
+		assertFts5();
+	} catch {
+		return;
+	}
+	try {
+		await withRetrievalLock(home.statePath, async () => {
+			const database = await openAndRefresh(home, config);
+			closeDatabase(database);
+		});
+	} catch (error) {
+		const detail = (error instanceof Error ? error.message : String(error)).replaceAll(/\r?\n/g, " ");
+		try {
+			await appendLog(home.logsPath, `retrieval refresh failed: ${detail}`); // DRAFT copy
+		} catch {
+			// Retrieval refresh and its diagnostics are both best-effort.
+		}
+	}
 }
 
 export async function runSync(argv: string[], output: SyncOutputOptions = {}): Promise<number> {
@@ -74,6 +96,7 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 				offboxError = error instanceof Error ? error.message : String(error);
 			}
 		}
+		await refreshRetrievalIndex(home, config);
 		const offboxFailures = offboxOutcomes.filter(
 			(outcome): outcome is RemotePublishOutcome & { error: string } => !outcome.ok && outcome.error !== undefined,
 		);
