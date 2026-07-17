@@ -31,6 +31,7 @@ import {
 	StorageError,
 } from "./storage/broker.js";
 import { INDEX_OBJECT_KEY, isLogicalObjectKey } from "./storage/object-key.js";
+import { compareVersions, latestCliVersion } from "./versions.js";
 
 interface RateLimiter {
 	limit(input: { key: string }): Promise<{ success: boolean }>;
@@ -45,6 +46,8 @@ type CloudBindings = Env &
 		BILLING_RATE_LIMITER: RateLimiter;
 		DOWNLOAD_RATE_LIMITER: RateLimiter;
 		GITHUB_CLIENT_ID: string;
+		MIN_CLI_VERSION?: string;
+		NPM_REGISTRY_URL?: string;
 		WEBHOOK_RATE_LIMITER: RateLimiter;
 	};
 
@@ -100,7 +103,7 @@ const checkoutSchema = z.strictObject({
 
 class ApiError extends Error {
 	constructor(
-		readonly status: 400 | 401 | 429,
+		readonly status: 400 | 401 | 426 | 429,
 		readonly code: string,
 	) {
 		super(code);
@@ -218,6 +221,25 @@ export function createApp() {
 	app.use("/v1/*", async (context, next) => {
 		context.header("Cache-Control", "no-store");
 		await next();
+	});
+	app.use("/v1/*", async (context, next) => {
+		if (context.req.path === "/v1/billing/webhook") {
+			await next();
+			return;
+		}
+		// packbat 0.1.0 is the only released CLI version that predates this header.
+		const clientVersion = context.req.header("x-packbat-cli-version") ?? "0.1.0";
+		if (context.env.MIN_CLI_VERSION !== undefined && compareVersions(clientVersion, context.env.MIN_CLI_VERSION) < 0) {
+			throw new ApiError(426, "cli_outdated");
+		}
+		await next();
+		const latest = await latestCliVersion(context.env);
+		if (latest !== null) {
+			context.header("x-packbat-cli-latest", latest);
+			if (compareVersions(clientVersion, latest) < 0) {
+				context.header("x-packbat-cli-update", latest);
+			}
+		}
 	});
 
 	app.get("/healthz", (context) => context.json({ ok: true }));

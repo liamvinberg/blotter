@@ -8,6 +8,7 @@
 	"routes": [{ "pattern": "api.packbat.dev", "custom_domain": true }],
 	"vars": {
 		"GITHUB_CLIENT_ID": "Ov23li0gyZBenbaeAq9D",
+		"MIN_CLI_VERSION": "0.1.0",
 		"R2_ACCOUNT_ID": "d2b578c66c7297496ef5b60c60895c81",
 		"R2_BUCKET_NAME": "packbat",
 		"STORAGE_ALERT_BYTES": "1000000000000",

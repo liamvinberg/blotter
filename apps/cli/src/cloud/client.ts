@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { PackbatError } from "../core/errors.js";
 import type { PackbatHome } from "../core/home.js";
+import { packbatVersion } from "../core/version.js";
 import { type CloudTokenResponse, cloudAccessToken, cloudTokenResponseSchema } from "./credentials.js";
 
 const DEFAULT_API_BASE_URL = "https://api.packbat.dev";
@@ -42,6 +43,8 @@ const clientConfigSchema = z.strictObject({ githubClientId: z.string().min(1) })
 
 export type CloudBillingStatus = z.infer<typeof billingStatusSchema>;
 
+let availableUpdateVersion: string | null = null;
+
 export class CloudApiError extends Error {
 	constructor(
 		readonly status: number,
@@ -52,9 +55,15 @@ export class CloudApiError extends Error {
 				? "Packbat Cloud uploads are frozen; run `packbat status` for subscription and restore details"
 				: code === "quota_exceeded"
 					? "Packbat Cloud quota is full; no stored ciphertext was deleted"
-					: `Packbat Cloud request failed (${code})`,
+					: code === "cli_outdated"
+						? "Packbat Cloud needs a newer packbat, update with npm install --global packbat@latest" // DRAFT copy
+						: `Packbat Cloud request failed (${code})`,
 		);
 	}
+}
+
+export function cloudUpdateAvailableVersion(): string | null {
+	return availableUpdateVersion;
 }
 
 export function cloudApiBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
@@ -82,6 +91,14 @@ async function parsedResponse<T>(response: Response, schema: z.ZodType<T>, opera
 	return result.data;
 }
 
+async function packbatApiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+	const headers = new Headers(init.headers);
+	headers.set("x-packbat-cli-version", packbatVersion());
+	const response = await fetch(input, { ...init, headers });
+	availableUpdateVersion = response.headers.get("x-packbat-cli-update") ?? availableUpdateVersion;
+	return response;
+}
+
 async function authenticatedFetch(
 	home: PackbatHome,
 	path: string,
@@ -89,19 +106,23 @@ async function authenticatedFetch(
 	apiBaseUrl = cloudApiBaseUrl(),
 ): Promise<Response> {
 	const token = await cloudAccessToken(home, apiBaseUrl);
-	return await fetch(`${apiBaseUrl}${path}`, {
+	return await packbatApiFetch(`${apiBaseUrl}${path}`, {
 		...init,
 		headers: { ...init.headers, Authorization: `Bearer ${token}` },
 	});
 }
 
 export async function cloudClientConfig(apiBaseUrl = cloudApiBaseUrl()): Promise<{ githubClientId: string }> {
-	return await parsedResponse(await fetch(`${apiBaseUrl}/v1/client`), clientConfigSchema, "client configuration");
+	return await parsedResponse(
+		await packbatApiFetch(`${apiBaseUrl}/v1/client`),
+		clientConfigSchema,
+		"client configuration",
+	);
 }
 
 export async function exchangeGitHubToken(githubAccessToken: string): Promise<CloudTokenResponse> {
 	return await parsedResponse(
-		await fetch(`${cloudApiBaseUrl()}/v1/auth/github/exchange`, {
+		await packbatApiFetch(`${cloudApiBaseUrl()}/v1/auth/github/exchange`, {
 			body: JSON.stringify({ githubAccessToken }),
 			headers: { "Content-Type": "application/json" },
 			method: "POST",

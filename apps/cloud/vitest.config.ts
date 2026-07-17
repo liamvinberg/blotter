@@ -12,6 +12,7 @@ export default defineConfig(async () => {
 					bindings: {
 						ACCESS_TOKEN_SECRET: "packbat-test-signing-secret-32-bytes-minimum",
 						GITHUB_CLIENT_ID: "Ov23liPackbatCloudTest",
+						NPM_REGISTRY_URL: "http://127.0.0.1:1",
 						R2_ACCESS_KEY_ID: "test-r2-access-key",
 						R2_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
 						R2_BUCKET_NAME: "packbat",

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -9,6 +10,9 @@ import { makeTempHome, runCli } from "./helpers/run-cli.js";
 
 const homes: string[] = [];
 const servers: Array<ReturnType<typeof createServer>> = [];
+const cliPackageVersion = (
+	JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
+).version;
 
 async function body(request: IncomingMessage): Promise<Buffer> {
 	const chunks: Buffer[] = [];
@@ -30,6 +34,11 @@ async function listen(
 ): Promise<string> {
 	let baseUrl = "";
 	const server = createServer((request, response) => {
+		const url = new URL(request.url ?? "/", baseUrl);
+		if (url.pathname.startsWith("/v1/") && request.headers["x-packbat-cli-version"] !== cliPackageVersion) {
+			reject(response);
+			return;
+		}
 		void handler(request, response, baseUrl).catch((error) => {
 			response.writeHead(500);
 			response.end(error instanceof Error ? error.message : String(error));
@@ -121,8 +130,12 @@ describe("Packbat Cloud managed remote", () => {
 		let reservationSweepId: string | undefined;
 		let indexReserved = false;
 		let billingState: "active" | "grace" = "active";
+		let advertisesUpdate = true;
 		const baseUrl = await listen(async (request, response, origin) => {
 			const url = new URL(request.url ?? "/", origin);
+			if (advertisesUpdate && url.pathname.startsWith("/v1/")) {
+				response.setHeader("x-packbat-cli-update", "9.9.9");
+			}
 			if (url.pathname === "/v1/billing/status") {
 				json(response, 200, {
 					billingStarted: true,
@@ -231,6 +244,12 @@ describe("Packbat Cloud managed remote", () => {
 		const first = await runCli(["sync"], { home: layout.home, env });
 		expect(first.code, first.stderr).toBe(0);
 		expect(first.stdout).toContain("off-box 1/1");
+		expect(
+			first.stdout
+				.split("\n")
+				.filter((line) => line === "packbat 9.9.9 is available, update with npm install --global packbat@latest"),
+		).toHaveLength(1);
+		advertisesUpdate = false;
 		const [remoteStateName] = await readdir(join(layout.packbatHome, "state", "offbox"));
 		if (remoteStateName === undefined) throw new Error("Packbat did not create remote state");
 		const remoteStatePath = join(layout.packbatHome, "state", "offbox", remoteStateName);
@@ -244,6 +263,7 @@ describe("Packbat Cloud managed remote", () => {
 		acceptsReservations = false;
 		const second = await runCli(["sync"], { home: layout.home, env });
 		expect(second.code, second.stderr).toBe(0);
+		expect(second.stdout).not.toContain(" is available, update with npm install --global packbat@latest");
 		expect(await readFile(join(remoteStatePath, "uploaded.jsonl"), "utf8")).toBe(uploadedBefore);
 
 		const restoreLayout = await cloudLayout();
@@ -314,6 +334,44 @@ machine remote: ${machineRemoteId}
 					status: "problem",
 				}),
 			]),
+		);
+	});
+
+	test("reports when Packbat Cloud requires a newer CLI", async () => {
+		const layout = await cloudLayout();
+		const { recipient } = await generateTestIdentity();
+		await Promise.all([makeClaudeStore(layout.claudeRoot), writeCredentials(layout.packbatHome)]);
+		await writeFile(
+			join(layout.packbatHome, "config.json"),
+			`${JSON.stringify({
+				version: 2,
+				machine: "outdated-machine",
+				archiveRoot: layout.archiveRoot,
+				sweep: { intervalMinutes: 60 },
+				offbox: {
+					mode: "configured",
+					recipient,
+					remotes: [{ type: "cloud", machineRemoteId: "abcdefghijklmnopqrstuvwx" }],
+				},
+			})}\n`,
+		);
+		const baseUrl = await listen(async (request, response, origin) => {
+			const url = new URL(request.url ?? "/", origin);
+			if (url.pathname === "/v1/uploads/reservations") {
+				json(response, 426, { error: "cli_outdated" });
+				return;
+			}
+			json(response, 404, { error: "not_found" });
+		});
+
+		const result = await runCli(["sync"], {
+			home: layout.home,
+			env: { ...layout.env, PACKBAT_CLOUD_API_URL: baseUrl },
+		});
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain(
+			"Packbat Cloud needs a newer packbat, update with npm install --global packbat@latest",
 		);
 	});
 

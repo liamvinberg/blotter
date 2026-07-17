@@ -1,3 +1,4 @@
+import { cloudUpdateAvailableVersion } from "../cloud/client.js";
 import { sweep } from "../core/archive.js";
 import { assertZstdSupport } from "../core/compress.js";
 import { loadConfig } from "../core/config.js";
@@ -19,6 +20,13 @@ function reportSummary(summary: string, options: SyncOutputOptions): void {
 	options.onSummary?.(summary);
 	if (options.writeSummary !== false) {
 		process.stdout.write(`${summary}\n`);
+	}
+}
+
+function reportCloudUpdate(): void {
+	const version = cloudUpdateAvailableVersion();
+	if (version !== null) {
+		process.stdout.write(`packbat ${version} is available, update with npm install --global packbat@latest\n`); // DRAFT copy
 	}
 }
 
@@ -102,11 +110,13 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 			process.stderr.write(`packbat sync: off-box ${outcome.destination}: ${outcome.error}\n`); // DRAFT copy
 		}
 		reportSummary(summary, output);
+		reportCloudUpdate();
 		return ok && offboxFailures.length === 0 && offboxError === undefined ? 0 : 1;
 	});
 	if (!locked.acquired) {
 		output.onBusy?.();
 		reportSummary("sync already running", output);
+		reportCloudUpdate();
 		return 0;
 	}
 	return locked.value;
