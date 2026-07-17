@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import packageMetadata from "../../package.json" with { type: "json" };
 import { parseCloudRecoveryLocator, recipientChallenge, renderRecoveryKit } from "./recovery-kit.js";
 
 describe("recovery kit", () => {
@@ -19,7 +20,7 @@ describe("recovery kit", () => {
 		});
 
 		expect(kit).toBe(`Packbat recovery kit
-Packbat version: 0.1.0
+Packbat version: ${packageMetadata.version}
 format: 2
 created: 2026-07-13T10:11:12.000Z
 
