@@ -58,5 +58,5 @@ Single-context: `CONTEXT.md` + `docs/adr/` at the repo root, created lazily. See
 ## Gates
 
 ```
-pnpm -C apps/cli typecheck && pnpm -C apps/cli test && pnpm -C apps/web typecheck && pnpm -C apps/web build && pnpm check
+pnpm -C apps/cli typecheck && pnpm -C apps/cli test && pnpm -C apps/cloud typecheck && pnpm -C apps/cloud test && pnpm -C apps/web typecheck && pnpm -C apps/web build && pnpm check
 ```

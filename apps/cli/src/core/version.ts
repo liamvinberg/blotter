@@ -15,5 +15,5 @@ export function packbatVersion(): string {
 			return parsed.version;
 		}
 	}
-	throw new PackbatError("packbat could not determine its own version");
+	throw new PackbatError("packbat could not determine its own version"); // DRAFT copy
 }
