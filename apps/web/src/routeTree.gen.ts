@@ -19,6 +19,8 @@ import { Route as DocsOffBoxCopiesRouteImport } from './routes/docs/off-box-copi
 import { Route as DocsHowItWorksRouteImport } from './routes/docs/how-it-works'
 import { Route as DocsDoctorRouteImport } from './routes/docs/doctor'
 import { Route as DocsCommandsRouteImport } from './routes/docs/commands'
+import { Route as CloudCheckoutSuccessRouteImport } from './routes/cloud/checkout/success'
+import { Route as CloudCheckoutCancelRouteImport } from './routes/cloud/checkout/cancel'
 
 const R404Route = R404RouteImport.update({
   id: '/404',
@@ -70,6 +72,16 @@ const DocsCommandsRoute = DocsCommandsRouteImport.update({
   path: '/commands',
   getParentRoute: () => DocsRouteRoute,
 } as any)
+const CloudCheckoutSuccessRoute = CloudCheckoutSuccessRouteImport.update({
+  id: '/cloud/checkout/success',
+  path: '/cloud/checkout/success',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CloudCheckoutCancelRoute = CloudCheckoutCancelRouteImport.update({
+  id: '/cloud/checkout/cancel',
+  path: '/cloud/checkout/cancel',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -82,6 +94,8 @@ export interface FileRoutesByFullPath {
   '/docs/restore-a-session': typeof DocsRestoreASessionRoute
   '/docs/troubleshooting': typeof DocsTroubleshootingRoute
   '/docs/': typeof DocsIndexRoute
+  '/cloud/checkout/cancel': typeof CloudCheckoutCancelRoute
+  '/cloud/checkout/success': typeof CloudCheckoutSuccessRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -93,6 +107,8 @@ export interface FileRoutesByTo {
   '/docs/restore-a-session': typeof DocsRestoreASessionRoute
   '/docs/troubleshooting': typeof DocsTroubleshootingRoute
   '/docs': typeof DocsIndexRoute
+  '/cloud/checkout/cancel': typeof CloudCheckoutCancelRoute
+  '/cloud/checkout/success': typeof CloudCheckoutSuccessRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -106,6 +122,8 @@ export interface FileRoutesById {
   '/docs/restore-a-session': typeof DocsRestoreASessionRoute
   '/docs/troubleshooting': typeof DocsTroubleshootingRoute
   '/docs/': typeof DocsIndexRoute
+  '/cloud/checkout/cancel': typeof CloudCheckoutCancelRoute
+  '/cloud/checkout/success': typeof CloudCheckoutSuccessRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -120,6 +138,8 @@ export interface FileRouteTypes {
     | '/docs/restore-a-session'
     | '/docs/troubleshooting'
     | '/docs/'
+    | '/cloud/checkout/cancel'
+    | '/cloud/checkout/success'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -131,6 +151,8 @@ export interface FileRouteTypes {
     | '/docs/restore-a-session'
     | '/docs/troubleshooting'
     | '/docs'
+    | '/cloud/checkout/cancel'
+    | '/cloud/checkout/success'
   id:
     | '__root__'
     | '/'
@@ -143,12 +165,16 @@ export interface FileRouteTypes {
     | '/docs/restore-a-session'
     | '/docs/troubleshooting'
     | '/docs/'
+    | '/cloud/checkout/cancel'
+    | '/cloud/checkout/success'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DocsRouteRoute: typeof DocsRouteRouteWithChildren
   R404Route: typeof R404Route
+  CloudCheckoutCancelRoute: typeof CloudCheckoutCancelRoute
+  CloudCheckoutSuccessRoute: typeof CloudCheckoutSuccessRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -223,6 +249,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DocsCommandsRouteImport
       parentRoute: typeof DocsRouteRoute
     }
+    '/cloud/checkout/success': {
+      id: '/cloud/checkout/success'
+      path: '/cloud/checkout/success'
+      fullPath: '/cloud/checkout/success'
+      preLoaderRoute: typeof CloudCheckoutSuccessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cloud/checkout/cancel': {
+      id: '/cloud/checkout/cancel'
+      path: '/cloud/checkout/cancel'
+      fullPath: '/cloud/checkout/cancel'
+      preLoaderRoute: typeof CloudCheckoutCancelRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -254,6 +294,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DocsRouteRoute: DocsRouteRouteWithChildren,
   R404Route: R404Route,
+  CloudCheckoutCancelRoute: CloudCheckoutCancelRoute,
+  CloudCheckoutSuccessRoute: CloudCheckoutSuccessRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
