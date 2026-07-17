@@ -127,6 +127,7 @@ describe("hosted billing", () => {
 			"line_items[0][price]": env.STRIPE_ANNUAL_PRICE_ID,
 			"line_items[0][quantity]": "1",
 			mode: "subscription",
+			payment_method_collection: "if_required",
 			"subscription_data[metadata][packbat_user_id]": linked.account.id,
 			success_url: env.STRIPE_CHECKOUT_SUCCESS_URL,
 			"tax_id_collection[enabled]": "true",

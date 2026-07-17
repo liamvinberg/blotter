@@ -166,6 +166,7 @@ export async function createCheckout(
 			"line_items[0][price]": priceId,
 			"line_items[0][quantity]": "1",
 			mode: "subscription",
+			payment_method_collection: "if_required",
 			"subscription_data[description]": "Packbat Cloud, 100 GB end-to-end encrypted archive storage",
 			"subscription_data[metadata][packbat_user_id]": userId,
 			success_url: env.STRIPE_CHECKOUT_SUCCESS_URL,
