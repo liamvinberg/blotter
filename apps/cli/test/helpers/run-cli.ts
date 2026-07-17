@@ -163,7 +163,9 @@ export async function makeTempHome(): Promise<string> {
 
 export async function acquireOAuthCallbackPort(): Promise<() => Promise<void>> {
 	const lockPath = join(tmpdir(), `packbat-oauth-callback-${process.ppid}.lock`);
-	for (let attempt = 0; attempt < 400; attempt += 1) {
+	// 60s of attempts: slow two-core CI runners serialize several full OAuth flows
+	// behind this lock, so the wait must outlast a competing flow, not a fast one.
+	for (let attempt = 0; attempt < 2_400; attempt += 1) {
 		try {
 			await mkdir(lockPath);
 			return async () => await rm(lockPath, { recursive: true, force: true });
