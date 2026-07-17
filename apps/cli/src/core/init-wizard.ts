@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { cancel, confirm, intro, isCancel, log, note, outro, password, select, spinner, text } from "@clack/prompts";
 import { type CloudLinkEvents, linkCloudRemote } from "../cloud/link.js";
-import { generateIdentity, identityToRecipient } from "../offbox/age.js";
+import { generateIdentity, identityToRecipient, parseIdentityFile } from "../offbox/age.js";
 import {
 	createAwsDestination,
 	createCustomRcloneDestination,
@@ -18,12 +19,19 @@ import {
 } from "../offbox/destination-setup.js";
 import { discoverRclone } from "../offbox/rclone.js";
 import { pickRcloneInstall } from "../offbox/rclone-install.js";
-import { recipientChallenge, renderRecoveryKit, writeRecoveryKit } from "../offbox/recovery-kit.js";
+import {
+	readRecoveryKitIdentity,
+	recipientChallenge,
+	renderRecoveryKit,
+	writeRecoveryKit,
+} from "../offbox/recovery-kit.js";
 import { smokeTestRemoteIndex } from "../offbox/smoke.js";
 import { previewSchedule } from "../schedule/scheduler.js";
 import { loadConfig, type OffboxConfig, type PackbatConfig, remoteDestination } from "./config.js";
+import { errorMessage, PackbatError } from "./errors.js";
 import { commandOnPath } from "./exec.js";
 import { resolveHome } from "./home.js";
+import { writePrivateFile } from "./private-file.js";
 import {
 	createInitScheduleOptions,
 	detectInitStores,
@@ -463,8 +471,48 @@ async function verifyCustody(challenge: string): Promise<boolean | WizardCancell
 	return false;
 }
 
+async function importRecoveryIdentity(
+	configuredRecipient?: string,
+): Promise<{ identity: string; recipient: string } | WizardCancelled> {
+	const path = await askRequiredText("Recovery kit path");
+	if (path === WIZARD_CANCELLED) return path;
+	const imported = await readRecoveryKitIdentity(path);
+	let recipient: string;
+	try {
+		recipient = await identityToRecipient(imported.identity);
+	} catch (error) {
+		throw new PackbatError(`could not parse age identity from recovery kit: ${errorMessage(error)}`); // DRAFT copy
+	}
+	if (recipient !== imported.recipient) {
+		throw new PackbatError("recovery kit identity does not match its age recipient"); // DRAFT copy
+	}
+	if (configuredRecipient !== undefined && recipient !== configuredRecipient) {
+		throw new PackbatError("recovery kit identity does not match the configured age recipient"); // DRAFT copy
+	}
+	return { identity: imported.identity, recipient };
+}
+
+async function residentIdentityMatching(identityPath: string, recipient: string): Promise<string | null> {
+	try {
+		const identity = parseIdentityFile(await readFile(identityPath, "utf8"));
+		return (await identityToRecipient(identity)) === recipient ? identity : null;
+	} catch {
+		return null;
+	}
+}
+
 async function configureOffbox(config: PackbatConfig, homePath: string): Promise<OffboxSetupResult | WizardCancelled> {
 	const home = resolveHome();
+	if (config.offbox.mode === "configured") {
+		const resident = await residentIdentityMatching(home.identityPath, config.offbox.recipient);
+		if (resident !== null) {
+			return { kind: "configured", config, offbox: config.offbox, identity: resident };
+		}
+		const imported = await importRecoveryIdentity(config.offbox.recipient);
+		if (imported === WIZARD_CANCELLED) return imported;
+		await writePrivateFile(home.identityPath, `${imported.identity}\n`);
+		return { kind: "configured", config, offbox: config.offbox, identity: imported.identity };
+	}
 	log.info("Right now your archive lives only on this machine. An encrypted copy on a remote you own survives it.");
 	const choice = promptResult<DestinationChoice>(
 		await select<DestinationChoice>({
@@ -507,27 +555,47 @@ async function configureOffbox(config: PackbatConfig, homePath: string): Promise
 		if (selected === WIZARD_CANCELLED) return selected;
 		remote = selected;
 	}
-	const identity = await generateIdentity();
-	const recipient = await identityToRecipient(identity);
-	const kit = renderRecoveryKit({
-		identity,
-		recipient,
-		remotes: [remote.recovery],
-		createdAt: new Date().toISOString(),
-	});
-	const saved = await saveRecoveryKit(kit, homePath);
-	if (saved === WIZARD_CANCELLED) return saved;
-	log.warn("The recovery kit holds the only key. Off-box copies cannot be decrypted without it.");
-	const custody = await verifyCustody(recipientChallenge(recipient));
-	if (custody === WIZARD_CANCELLED) return custody;
-	if (!custody) {
-		log.warn("The recovery kit was not verified. Off-box is skipped.");
-		return { kind: "skipped", config: await writeInitConfig(home, config.archiveRoot, skippedOffboxConfig()) };
+	const identityChoice = promptResult<"mint" | "join">(
+		await select<"mint" | "join">({
+			message: "Encryption key", // DRAFT copy
+			options: [
+				{ value: "mint", label: "This is my first Packbat machine" }, // DRAFT copy
+				{ value: "join", label: "I have a recovery kit" }, // DRAFT copy
+			],
+			initialValue: "mint",
+		}),
+	);
+	if (identityChoice === WIZARD_CANCELLED) return identityChoice;
+	let identity: string;
+	let recipient: string;
+	if (identityChoice === "join") {
+		const imported = await importRecoveryIdentity();
+		if (imported === WIZARD_CANCELLED) return imported;
+		({ identity, recipient } = imported);
+	} else {
+		identity = await generateIdentity();
+		recipient = await identityToRecipient(identity);
+		const kit = renderRecoveryKit({
+			identity,
+			recipient,
+			remotes: [remote.recovery],
+			createdAt: new Date().toISOString(),
+		});
+		const saved = await saveRecoveryKit(kit, homePath);
+		if (saved === WIZARD_CANCELLED) return saved;
+		log.warn("The recovery kit is the backup for the key kept on this machine."); // DRAFT copy
+		const custody = await verifyCustody(recipientChallenge(recipient));
+		if (custody === WIZARD_CANCELLED) return custody;
+		if (!custody) {
+			log.warn("The recovery kit was not verified. Off-box is skipped.");
+			return { kind: "skipped", config: await writeInitConfig(home, config.archiveRoot, skippedOffboxConfig()) };
+		}
+		log.success("Recovery kit verified. Packbat keeps the key on this machine for automatic restore."); // DRAFT copy
 	}
-	log.success("Recovery kit verified. The key is only needed to restore from the remote.");
 	if (remote.configure !== undefined) {
 		await remote.configure();
 	}
+	await writePrivateFile(home.identityPath, `${identity}\n`);
 	const offbox: ConfiguredOffbox = { mode: "configured", recipient, remotes: [remote.remote] };
 	return { kind: "configured", config: await writeInitConfig(home, config.archiveRoot, offbox), offbox, identity };
 }

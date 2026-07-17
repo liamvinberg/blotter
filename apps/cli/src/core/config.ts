@@ -43,7 +43,7 @@ const offboxSchema = z.discriminatedUnion("mode", [
 	}),
 	z.object({
 		mode: z.literal("configured"),
-		/** age public recipient. The identity never lives on this machine after onboarding. */
+		/** age public recipient. Its matching identity lives in the private resident identity file. */
 		recipient: z.string().regex(/^age1[0-9a-z]+$/, "must be an age recipient (age1…)"),
 		remotes: remotesSchema,
 	}),

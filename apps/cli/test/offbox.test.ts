@@ -295,19 +295,26 @@ describe.skipIf(!hasRclone)("off-box archive cycle", () => {
 			expect(archive).toEqual(await readFile(join(layout.archiveRoot, "test-machine", record.path)));
 		}
 
-		const identityPath = join(layout.home, "identity.txt");
-		await writeFile(identityPath, `${identity}\n`);
-		for (const destination of [undefined, secondRemote] as const) {
+		const residentIdentityPath = join(layout.packbatHome, "identity.txt");
+		const explicitIdentityPath = join(layout.home, "recovery-identity.txt");
+		await writeFile(residentIdentityPath, `${identity}\n`);
+		await writeFile(explicitIdentityPath, `${identity}\n`);
+		for (const [destination, identityArguments] of [
+			[undefined, []],
+			[secondRemote, ["--identity", explicitIdentityPath]],
+		] as const) {
 			await Promise.all([
 				rm(layout.claudeRoot, { recursive: true, force: true }),
 				rm(layout.archiveRoot, { recursive: true, force: true }),
 			]);
+			if (identityArguments.length > 0) {
+				await writeFile(residentIdentityPath, "not an age identity\n");
+			}
 			const restored = await runCli(
 				[
 					"restore",
 					"--from-remote",
-					"--identity",
-					identityPath,
+					...identityArguments,
 					...(destination === undefined ? [] : ["--remote", destination]),
 					fixture.id,
 				],

@@ -4,3 +4,7 @@ export async function generateTestIdentity(): Promise<{ identity: string; recipi
 	const identity = await generateAgeIdentity();
 	return { identity, recipient: await ageIdentityToRecipient(identity) };
 }
+
+export async function deriveTestRecipient(identity: string): Promise<string> {
+	return await ageIdentityToRecipient(identity);
+}

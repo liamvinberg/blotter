@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -67,19 +68,26 @@ function selectRemote(config: PackbatConfig, destination: string | undefined): R
 export async function restoreFromRemote(options: {
 	config: PackbatConfig;
 	machine: string;
-	identityPath: string;
+	identityPath: string | undefined;
 	remoteDestination: string | undefined;
 	prefix: string | undefined;
 	force: boolean;
 }): Promise<RemoteRestoreResult> {
+	const home = resolveHome();
+	const identityPath = options.identityPath ?? home.identityPath;
+	if (options.identityPath === undefined && !existsSync(identityPath)) {
+		// DRAFT copy
+		throw new PackbatError(
+			"no resident identity; import your recovery kit with `packbat init`, or pass the recovery kit with `--identity <file>`",
+		);
+	}
+	const identity = await readIdentity(identityPath);
 	if (options.config.offbox.mode !== "configured") {
 		throw new PackbatError("off-box is not configured; run `packbat init` first");
 	}
 	const offbox = options.config.offbox;
 	const remoteConfig = selectRemote(options.config, options.remoteDestination);
-	const home = resolveHome();
 	const remote: ArchiveRemote = createArchiveRemote(home, remoteConfig);
-	const identity = await readIdentity(options.identityPath);
 	let recipient: string;
 	try {
 		recipient = await identityToRecipient(identity);

@@ -388,8 +388,8 @@ describe("packbat restore", () => {
 			env: layout.env,
 		});
 		expect(missingIdentity.code).toBe(1);
-		expect(missingIdentity.stderr).toContain("--from-remote requires --identity");
-		expect(missingIdentity.stderr).toContain("Usage: packbat restore");
+		expect(missingIdentity.stderr).toContain("recovery kit");
+		expect(missingIdentity.stderr).toContain("`packbat init`");
 
 		const shortFlag = await runCli(["restore", "-x"], { home: layout.home, env: layout.env });
 		expect(shortFlag.code).toBe(1);

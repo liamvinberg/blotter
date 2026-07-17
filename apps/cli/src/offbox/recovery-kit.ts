@@ -24,6 +24,34 @@ export interface CloudRecoveryLocator {
 	recipient: string;
 }
 
+export interface RecoveryKitIdentity {
+	identity: string;
+	recipient: string;
+}
+
+export function parseRecoveryKitIdentity(contents: string): RecoveryKitIdentity {
+	if (!contents.startsWith("Packbat recovery kit\n")) {
+		throw new PackbatError("file is not a Packbat recovery kit");
+	}
+	const identity = /^Age identity\r?\n(AGE-SECRET-KEY-1[0-9A-Z]+)$/mu.exec(contents)?.[1];
+	const recipient = /^Age recipient\r?\n(age1[0-9a-z]+)$/mu.exec(contents)?.[1];
+	if (identity === undefined || recipient === undefined) {
+		throw new PackbatError("recovery kit does not contain a valid age identity and recipient");
+	}
+	return { identity, recipient };
+}
+
+export async function readRecoveryKitIdentity(path: string): Promise<RecoveryKitIdentity> {
+	try {
+		return parseRecoveryKitIdentity(await readFile(path, "utf8"));
+	} catch (error) {
+		if (error instanceof PackbatError) {
+			throw error;
+		}
+		throw new PackbatError(`could not read recovery kit ${path}: ${errorMessage(error)}`);
+	}
+}
+
 export function parseCloudRecoveryLocator(contents: string): CloudRecoveryLocator {
 	if (!contents.startsWith("Packbat recovery kit\n")) {
 		throw new PackbatError("file is not a Packbat recovery kit");

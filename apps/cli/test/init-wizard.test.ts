@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { renderRecoveryKit } from "../src/offbox/recovery-kit.js";
+import { deriveTestRecipient, generateTestIdentity } from "./helpers/age.js";
 import { acquireOAuthCallbackPort, type InteractiveStep, makeTempHome, runInteractiveCli } from "./helpers/run-cli.js";
 
 const homes: string[] = [];
@@ -37,6 +40,7 @@ function custodyStep(kitPath: string): InteractiveStep {
 
 function finishSteps(kitPath: string): InteractiveStep[] {
 	return [
+		{ waitFor: "Encryption key", reply: enter() },
 		{ waitFor: "Recovery kit destination", reply: enter() },
 		{ waitFor: "Recovery kit path", reply: enter() },
 		custodyStep(kitPath),
@@ -426,6 +430,7 @@ describe.sequential("interactive init wizard", () => {
 			{ waitFor: "Server connection", reply: moveDown(1) },
 			{ waitFor: "Rclone destination", reply: enter(remoteRoot) },
 			{ waitFor: "Rclone config", reply: enter() },
+			{ waitFor: "Encryption key", reply: enter() },
 			{ waitFor: "Recovery kit destination", reply: enter() },
 			{ waitFor: "Recovery kit path", reply: enter() },
 			custodyStep(kitPath),
@@ -434,6 +439,101 @@ describe.sequential("interactive init wizard", () => {
 		expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
 		expect(await readFile(join(packbatHome, "config.json"), "utf8")).toContain(remoteRoot);
 		expect(await readFile(kitPath, "utf8")).toContain(`destination: ${remoteRoot}`);
+		const identityPath = join(packbatHome, "identity.txt");
+		const identity = (await readFile(identityPath, "utf8")).trim();
+		const config = JSON.parse(await readFile(join(packbatHome, "config.json"), "utf8")) as {
+			offbox: { recipient: string };
+		};
+		expect(await deriveTestRecipient(identity)).toBe(config.offbox.recipient);
+		expect((await stat(identityPath)).mode & 0o777).toBe(0o600);
 		expect(`${result.stdout}${result.stderr}`).toContain("Done. Run `packbat status`.");
 	}, 60_000);
+
+	test("joins with an existing recovery kit without minting a new identity", async () => {
+		const home = await makeTempHome();
+		homes.push(home);
+		const packbatHome = join(home, ".packbat");
+		const remoteRoot = join(home, "remote");
+		const kitPath = join(home, "existing-recovery-kit.txt");
+		const { identity, recipient } = await generateTestIdentity();
+		await writeFile(
+			kitPath,
+			renderRecoveryKit({
+				identity,
+				recipient,
+				remotes: [{ type: "rclone", destination: remoteRoot }],
+				createdAt: "2026-07-17T10:11:12.000Z",
+			}),
+		);
+
+		const result = await runInteractiveCli(["init", "--no-activate"], { home, env: { PACKBAT_HOME: packbatHome } }, [
+			{ waitFor: "Archive root", reply: enter() },
+			{ waitFor: "Install this schedule?", reply: enter() },
+			{ waitFor: "Off-box destination", reply: moveUp(1) },
+			{ waitFor: "Server connection", reply: moveDown(1) },
+			{ waitFor: "Rclone destination", reply: enter(remoteRoot) },
+			{ waitFor: "Rclone config", reply: enter() },
+			{ waitFor: "Encryption key", reply: moveDown(1) },
+			{ waitFor: "Recovery kit path", reply: enter(kitPath) },
+		]);
+
+		const output = `${result.stdout}${result.stderr}`;
+		expect(result.code, output).toBe(0);
+		const identityPath = join(packbatHome, "identity.txt");
+		expect(await readFile(identityPath, "utf8")).toBe(`${identity}\n`);
+		expect((await stat(identityPath)).mode & 0o777).toBe(0o600);
+		const config = JSON.parse(await readFile(join(packbatHome, "config.json"), "utf8")) as {
+			offbox: { recipient: string };
+		};
+		expect(config.offbox.recipient).toBe(recipient);
+		expect(output).not.toContain("Enter the last 8 characters");
+		expect(output).not.toContain("Recovery kit destination");
+		expect(existsSync(join(home, "packbat-recovery-kit.txt"))).toBe(false);
+	}, 60_000);
+
+	test("rejects a recovery kit that does not match an existing configured recipient", async () => {
+		const home = await makeTempHome();
+		homes.push(home);
+		const packbatHome = join(home, ".packbat");
+		const archiveRoot = join(home, "archive");
+		const remoteRoot = join(home, "remote");
+		const kitPath = join(home, "mismatched-recovery-kit.txt");
+		const configured = await generateTestIdentity();
+		const imported = await generateTestIdentity();
+		await mkdir(packbatHome, { recursive: true });
+		await writeFile(
+			join(packbatHome, "config.json"),
+			`${JSON.stringify({
+				version: 2,
+				machine: "test-machine",
+				archiveRoot,
+				sweep: { intervalMinutes: 60 },
+				offbox: {
+					mode: "configured",
+					recipient: configured.recipient,
+					remotes: [{ type: "rclone", destination: remoteRoot, rcloneConfig: "default" }],
+				},
+			})}\n`,
+		);
+		await writeFile(
+			kitPath,
+			renderRecoveryKit({
+				...imported,
+				remotes: [{ type: "rclone", destination: remoteRoot }],
+				createdAt: "2026-07-17T10:11:12.000Z",
+			}),
+		);
+
+		const result = await runInteractiveCli(["init", "--no-activate"], { home, env: { PACKBAT_HOME: packbatHome } }, [
+			{ waitFor: "Archive root", reply: enter() },
+			{ waitFor: "Install this schedule?", reply: enter() },
+			{ waitFor: "Recovery kit path", reply: enter(kitPath) },
+		]);
+
+		const output = `${result.stdout}${result.stderr}`;
+		expect(result.code).toBe(1);
+		expect(output).toContain("recovery kit identity does not match the configured age recipient");
+		expect(output).not.toContain("Off-box destination");
+		expect(existsSync(join(packbatHome, "identity.txt"))).toBe(false);
+	});
 });

@@ -10,7 +10,7 @@ import {
 import { restoreFromRemote } from "../offbox/remote-restore.js";
 
 const USAGE =
-	"Usage: packbat restore [--machine <name>] [--force] [--from-remote --identity <file> [--remote <destination>]] [<id-or-prefix>]\n"; // DRAFT copy
+	"Usage: packbat restore [--machine <name>] [--force] [--from-remote [--identity <file>] [--remote <destination>]] [<id-or-prefix>]\n"; // DRAFT copy
 const MACHINE_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 interface RestoreOptions {
@@ -99,9 +99,6 @@ function parseOptions(argv: string[]): RestoreOptions | null {
 	if (options.force && options.prefix === undefined) {
 		return usageError("--force requires an id or prefix");
 	}
-	if (options.fromRemote && options.identityPath === undefined) {
-		return usageError("--from-remote requires --identity <file>");
-	}
 	if (!options.fromRemote && options.identityPath !== undefined) {
 		return usageError("--identity requires --from-remote");
 	}
@@ -149,7 +146,7 @@ export async function runRestore(argv: string[]): Promise<number> {
 		const remote = await restoreFromRemote({
 			config,
 			machine,
-			identityPath: options.identityPath!,
+			identityPath: options.identityPath,
 			remoteDestination: options.remoteDestination,
 			prefix: options.prefix,
 			force: options.force,
