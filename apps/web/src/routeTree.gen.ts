@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as R404RouteImport } from './routes/404'
 import { Route as DocsRouteRouteImport } from './routes/docs/route'
 import { Route as IndexRouteImport } from './routes/index'
@@ -22,6 +23,11 @@ import { Route as DocsCommandsRouteImport } from './routes/docs/commands'
 import { Route as CloudCheckoutSuccessRouteImport } from './routes/cloud/checkout/success'
 import { Route as CloudCheckoutCancelRouteImport } from './routes/cloud/checkout/cancel'
 
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const R404Route = R404RouteImport.update({
   id: '/404',
   path: '/404',
@@ -87,6 +93,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/docs': typeof DocsRouteRouteWithChildren
   '/404': typeof R404Route
+  '/privacy': typeof PrivacyRoute
   '/docs/commands': typeof DocsCommandsRoute
   '/docs/doctor': typeof DocsDoctorRoute
   '/docs/how-it-works': typeof DocsHowItWorksRoute
@@ -100,6 +107,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/404': typeof R404Route
+  '/privacy': typeof PrivacyRoute
   '/docs/commands': typeof DocsCommandsRoute
   '/docs/doctor': typeof DocsDoctorRoute
   '/docs/how-it-works': typeof DocsHowItWorksRoute
@@ -115,6 +123,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/docs': typeof DocsRouteRouteWithChildren
   '/404': typeof R404Route
+  '/privacy': typeof PrivacyRoute
   '/docs/commands': typeof DocsCommandsRoute
   '/docs/doctor': typeof DocsDoctorRoute
   '/docs/how-it-works': typeof DocsHowItWorksRoute
@@ -131,6 +140,7 @@ export interface FileRouteTypes {
     | '/'
     | '/docs'
     | '/404'
+    | '/privacy'
     | '/docs/commands'
     | '/docs/doctor'
     | '/docs/how-it-works'
@@ -144,6 +154,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/404'
+    | '/privacy'
     | '/docs/commands'
     | '/docs/doctor'
     | '/docs/how-it-works'
@@ -158,6 +169,7 @@ export interface FileRouteTypes {
     | '/'
     | '/docs'
     | '/404'
+    | '/privacy'
     | '/docs/commands'
     | '/docs/doctor'
     | '/docs/how-it-works'
@@ -173,12 +185,20 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DocsRouteRoute: typeof DocsRouteRouteWithChildren
   R404Route: typeof R404Route
+  PrivacyRoute: typeof PrivacyRoute
   CloudCheckoutCancelRoute: typeof CloudCheckoutCancelRoute
   CloudCheckoutSuccessRoute: typeof CloudCheckoutSuccessRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/404': {
       id: '/404'
       path: '/404'
@@ -294,6 +314,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DocsRouteRoute: DocsRouteRouteWithChildren,
   R404Route: R404Route,
+  PrivacyRoute: PrivacyRoute,
   CloudCheckoutCancelRoute: CloudCheckoutCancelRoute,
   CloudCheckoutSuccessRoute: CloudCheckoutSuccessRoute,
 }

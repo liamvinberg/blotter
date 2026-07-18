@@ -20,6 +20,9 @@ export function SiteFooter() {
 						<a className="font-mono text-[12px] leading-ui text-accent" href="/docs">
 							Docs
 						</a>
+						<a className="font-mono text-[12px] leading-ui text-muted" href="/privacy">
+							Privacy
+						</a>
 						<a className="font-mono text-[12px] leading-ui text-muted" href={GITHUB_URL}>
 							GitHub
 						</a>
@@ -29,6 +32,9 @@ export function SiteFooter() {
 					<code className="font-mono text-xs leading-ui text-ink">{`$ ${INSTALL_COMMAND}`}</code>
 					<a className="font-display text-sm leading-ui text-muted" href="/docs">
 						Docs
+					</a>
+					<a className="font-display text-sm leading-ui text-muted" href="/privacy">
+						Privacy
 					</a>
 					<a className="font-display text-sm leading-ui text-muted" href={GITHUB_URL}>
 						GitHub
