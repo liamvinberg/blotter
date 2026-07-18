@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/liamvinberg/packbat/compare/v0.2.1...v0.3.0) (2026-07-18)
+
+
+### Features
+
+* funnel surface stubs for the retrieval wave ([172843c](https://github.com/liamvinberg/packbat/commit/172843c3e4f92df711dc7c292d07db1eeec41d1a))
+* outline verb and ranged capped show ([b5e3a7b](https://github.com/liamvinberg/packbat/commit/b5e3a7b391eed03334974390da5563aeaa538e22))
+* prose-default search, role and limit flags, lock wait ([b69b199](https://github.com/liamvinberg/packbat/commit/b69b19916c5114a9db51affcd3c272d598b8f571))
+* query verb, read-only sql over the retrieval cache ([6aac99e](https://github.com/liamvinberg/packbat/commit/6aac99ee3307514b24d959ddcffe01f4877d4fa7))
+* sessions verb, fleet-wide discovery listing ([811132d](https://github.com/liamvinberg/packbat/commit/811132d29669144bcd2202e52e8e124724a067ec))
+
+
+### Polish
+
+* shared head and cap helpers, typed cursors ([42c76e7](https://github.com/liamvinberg/packbat/commit/42c76e707fd141c9f50b10a650ef76c8453e05cd))
+
 ## [0.2.1](https://github.com/liamvinberg/packbat/compare/v0.2.0...v0.2.1) (2026-07-17)
 
 
