@@ -45,6 +45,48 @@ interface SearchJson {
 	warnings: Array<{ code: string; unit: string; source: string; line: number | null; detail: string }>;
 }
 
+interface ShowJson {
+	v: 1;
+	unit: {
+		key: string;
+		id: string;
+		harness: string;
+		machine: string;
+		projects: string[];
+		startedAt: string | null;
+		updatedAt: string | null;
+	};
+	turns: Array<{
+		turn: number;
+		timestamp: string | null;
+		project: string | null;
+		role: string;
+		text: string;
+		filesTouched: string[];
+		commands: string[];
+	}>;
+	range: { from: number | null; to: number | null };
+	truncated: boolean;
+	next: { from: number; to: number } | null;
+	warnings: Array<{ code: string; unit: string; source: string; line: number | null; detail: string }>;
+}
+
+interface OutlineJson {
+	v: 1;
+	unit: ShowJson["unit"];
+	turns: Array<{
+		turn: number;
+		role: string;
+		timestamp: string | null;
+		chars: number;
+		head: string;
+	}>;
+	range: ShowJson["range"];
+	truncated: boolean;
+	next: ShowJson["next"];
+	warnings: ShowJson["warnings"];
+}
+
 async function layout(): Promise<RetrievalLayout> {
 	const value = await makeRetrievalLayout();
 	homes.push(value.home);
@@ -74,6 +116,216 @@ describe("packbat retrieval", () => {
 		expect(show.stdout).toBe("");
 		expect(show.stderr).toContain("packbat show: unknown option --wat");
 		expect(show.stderr).toContain("Usage: packbat show <unit-or-key>");
+	});
+
+	test("show selects every supported inclusive turn range form", async () => {
+		const test = await layout();
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: Array.from({ length: 7 }, (_, turn) => ({
+				type: "user",
+				timestamp: new Date(Date.UTC(2026, 0, 2, 3, turn)).toISOString(),
+				message: { role: "user", content: `turn ${turn}` },
+			})),
+		});
+
+		for (const [range, expected] of [
+			["3:5", [3, 4, 5]],
+			["3:", [3, 4, 5, 6]],
+			[":5", [0, 1, 2, 3, 4, 5]],
+			["4", [4]],
+		] as const) {
+			const shown = await command(test, ["show", CLAUDE_ID, "--turns", range, "--json"]);
+			expect(shown.code, shown.stderr).toBe(0);
+			const report = JSON.parse(shown.stdout) as ShowJson;
+			expect(report.turns.map((turn) => turn.turn)).toEqual(expected);
+			expect(report.range).toEqual({ from: expected[0], to: expected.at(-1) });
+			expect(report.truncated).toBe(false);
+			expect(report.next).toBeNull();
+		}
+	});
+
+	test("show and outline reject invalid or past-the-end turn ranges with command usage", async () => {
+		const test = await layout();
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: Array.from({ length: 3 }, (_, turn) => ({
+				type: "user",
+				message: { role: "user", content: `turn ${turn}` },
+			})),
+		});
+
+		for (const verb of ["show", "outline"] as const) {
+			for (const range of ["junk", "-1", "1:2:3", ":", "2:1"]) {
+				const invalid = await command(test, [verb, CLAUDE_ID, "--turns", range]);
+				expect(invalid.code).toBe(1);
+				expect(invalid.stdout).toBe("");
+				expect(invalid.stderr).toBe(
+					`packbat ${verb}: --turns must be n, a:b, a:, or :b with non-negative ordinals and a <= b\n\n` +
+						`Usage: packbat ${verb} <unit-or-key> [--turns <a:b>]${verb === "show" ? " [--all]" : ""} [--json]\n`,
+				);
+			}
+
+			const pastEnd = await command(test, [verb, CLAUDE_ID, "--turns", "3:"]);
+			expect(pastEnd.code).toBe(1);
+			expect(pastEnd.stdout).toBe("");
+			expect(pastEnd.stderr).toBe(
+				`packbat ${verb}: --turns starts at 3, but the last turn is 2\n\n` +
+					`Usage: packbat ${verb} <unit-or-key> [--turns <a:b>]${verb === "show" ? " [--all]" : ""} [--json]\n`,
+			);
+		}
+	});
+
+	test("show includes the budget-crossing turn and resumes without overlap or gaps", async () => {
+		const test = await layout();
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: [20_000, 15_000, 11].map((length, turn) => ({
+				type: "user",
+				timestamp: new Date(Date.UTC(2026, 0, 2, 3, turn)).toISOString(),
+				message: { role: "user", content: String(turn).repeat(length) },
+			})),
+		});
+
+		const capped = await command(test, ["show", CLAUDE_ID, "--json"]);
+		expect(capped.code, capped.stderr).toBe(0);
+		const firstPage = JSON.parse(capped.stdout) as ShowJson;
+		expect(firstPage.turns.map((turn) => turn.turn)).toEqual([0, 1]);
+		expect(firstPage.range).toEqual({ from: 0, to: 1 });
+		expect(firstPage.truncated).toBe(true);
+		expect(firstPage.next).toEqual({ from: 2, to: 2 });
+
+		const human = await command(test, ["show", CLAUDE_ID]);
+		expect(human.stdout).toContain(
+			`output truncated at turn 1 · continue with packbat show test-machine/claude-code/${CLAUDE_ID} --turns 2:2\n`,
+		);
+
+		const resumed = await command(test, ["show", CLAUDE_ID, "--turns", "2:2", "--json"]);
+		const secondPage = JSON.parse(resumed.stdout) as ShowJson;
+		expect(secondPage.turns.map((turn) => turn.turn)).toEqual([2]);
+		expect(secondPage.range).toEqual({ from: 2, to: 2 });
+		expect(secondPage.truncated).toBe(false);
+		expect(secondPage.next).toBeNull();
+		expect([...firstPage.turns, ...secondPage.turns].map((turn) => turn.turn)).toEqual([0, 1, 2]);
+
+		const uncapped = JSON.parse(
+			(await command(test, ["show", CLAUDE_ID, "--turns", "0:2", "--all", "--json"])).stdout,
+		) as ShowJson;
+		expect(uncapped.turns.map((turn) => turn.turn)).toEqual([0, 1, 2]);
+		expect(uncapped.range).toEqual({ from: 0, to: 2 });
+		expect(uncapped.truncated).toBe(false);
+		expect(uncapped.next).toBeNull();
+	});
+
+	test("outline prints the session header and one flattened summary per turn", async () => {
+		const test = await layout();
+		const texts = ["  First\nline\tflattened  ", `second ${"x".repeat(90)}`, "third without time"];
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: texts.map((text, turn) => ({
+				type: turn === 1 ? "assistant" : "user",
+				...(turn === 0 ? { cwd: "/synthetic/project" } : {}),
+				...(turn < 2 ? { timestamp: new Date(Date.UTC(2026, 0, 2, 3, 4, 5 + turn)).toISOString() } : {}),
+				message: { role: turn === 1 ? "assistant" : "user", content: text },
+			})),
+		});
+
+		const outlined = await command(test, ["outline", CLAUDE_ID]);
+		expect(outlined.code, outlined.stderr).toBe(0);
+		expect(outlined.stdout).toContain(`test-machine/claude-code/${CLAUDE_ID}\n`);
+		expect(outlined.stdout).toContain("claude-code · test-machine\n");
+		expect(outlined.stdout).toContain("projects: /synthetic/project\n");
+		expect(outlined.stdout).toContain("span 2026-01-02T03:04:05.000Z→2026-01-02T03:04:06.000Z\n");
+		expect(outlined.stdout).toContain(`3 turns · ${texts.reduce((sum, text) => sum + text.length, 0)} chars\n`);
+		expect(outlined.stdout).toContain(
+			`0 · user · 2026-01-02T03:04:05.000Z · ${texts[0]!.length} chars · First line flattened\n`,
+		);
+		expect(outlined.stdout).toContain(`2 · user · - · ${texts[2]!.length} chars · third without time\n`);
+
+		const json = await command(test, ["outline", CLAUDE_ID, "--json"]);
+		expect(json.code, json.stderr).toBe(0);
+		expect(JSON.parse(json.stdout) as OutlineJson).toEqual({
+			v: 1,
+			unit: {
+				key: `test-machine/claude-code/${CLAUDE_ID}`,
+				id: CLAUDE_ID,
+				harness: "claude-code",
+				machine: "test-machine",
+				projects: ["/synthetic/project"],
+				startedAt: "2026-01-02T03:04:05.000Z",
+				updatedAt: "2026-01-02T03:04:06.000Z",
+			},
+			turns: [
+				{
+					turn: 0,
+					role: "user",
+					timestamp: "2026-01-02T03:04:05.000Z",
+					chars: texts[0]!.length,
+					head: "First line flattened",
+				},
+				{
+					turn: 1,
+					role: "assistant",
+					timestamp: "2026-01-02T03:04:06.000Z",
+					chars: texts[1]!.length,
+					head: texts[1]!.slice(0, 80),
+				},
+				{ turn: 2, role: "user", timestamp: null, chars: texts[2]!.length, head: "third without time" },
+			],
+			range: { from: 0, to: 2 },
+			truncated: false,
+			next: null,
+			warnings: [],
+		});
+	});
+
+	test("outline caps turn lines and pages the remainder with --turns", async () => {
+		const test = await layout();
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: Array.from({ length: 253 }, (_, turn) => ({
+				type: "user",
+				timestamp: new Date(Date.UTC(2026, 0, 2, 0, 0, turn)).toISOString(),
+				message: { role: "user", content: `turn ${turn}` },
+			})),
+		});
+
+		const first = await command(test, ["outline", CLAUDE_ID, "--json"]);
+		expect(first.code, first.stderr).toBe(0);
+		const firstPage = JSON.parse(first.stdout) as OutlineJson;
+		expect(firstPage.turns).toHaveLength(250);
+		expect(firstPage.turns[0]?.turn).toBe(0);
+		expect(firstPage.turns.at(-1)?.turn).toBe(249);
+		expect(firstPage.range).toEqual({ from: 0, to: 249 });
+		expect(firstPage.truncated).toBe(true);
+		expect(firstPage.next).toEqual({ from: 250, to: 252 });
+
+		const human = await command(test, ["outline", CLAUDE_ID]);
+		expect(human.stdout).toContain(
+			`output truncated at turn 249 · continue with packbat outline test-machine/claude-code/${CLAUDE_ID} --turns 250:252\n`,
+		);
+
+		const second = await command(test, ["outline", CLAUDE_ID, "--turns", "250:", "--json"]);
+		const secondPage = JSON.parse(second.stdout) as OutlineJson;
+		expect(secondPage.turns.map((turn) => turn.turn)).toEqual([250, 251, 252]);
+		expect(secondPage.range).toEqual({ from: 250, to: 252 });
+		expect(secondPage.truncated).toBe(false);
+		expect(secondPage.next).toBeNull();
 	});
 
 	test("validates search role and repeated role and limit flags", async () => {
@@ -135,17 +387,61 @@ describe("packbat retrieval", () => {
 
 		const shown = await command(test, ["show", CLAUDE_ID.slice(0, 12), "--json"]);
 		expect(shown.code).toBe(0);
-		const report = JSON.parse(shown.stdout) as Record<string, unknown>;
-		expect(report).toMatchObject({
+		const report = JSON.parse(shown.stdout) as ShowJson;
+		expect(report).toEqual({
 			v: 1,
 			unit: {
 				key: `test-machine/claude-code/${CLAUDE_ID}`,
+				id: CLAUDE_ID,
+				harness: "claude-code",
+				machine: "test-machine",
 				projects: [],
 				startedAt: "2026-01-02T03:04:05.000Z",
 				updatedAt: "2026-01-02T03:04:05.000Z",
 			},
+			turns: [
+				{
+					turn: 0,
+					timestamp: "2026-01-02T03:04:05.000Z",
+					project: null,
+					role: "user",
+					text: "Needle prompt without a project.",
+					filesTouched: [],
+					commands: [],
+				},
+				{
+					turn: 1,
+					timestamp: null,
+					project: null,
+					role: "assistant",
+					text: "Needle response.",
+					filesTouched: [],
+					commands: [],
+				},
+			],
+			range: { from: 0, to: 1 },
+			truncated: false,
+			next: null,
 			warnings: [],
 		});
+	});
+
+	test("help prints the pinned agent-funnel command block byte-for-byte", async () => {
+		const test = await layout();
+		const help = await command(test, ["--help"]);
+		expect(help.code, help.stderr).toBe(0);
+		const commands = help.stdout.slice(help.stdout.indexOf("Commands:"), help.stdout.indexOf("\n\nOptions:"));
+		expect(commands).toBe(`Commands:
+  init      set up archiving: detect harnesses, schedule the sweep, off-box or skip
+  sync      run one sweep now (the scheduled job runs this)
+  doctor    prove the schedule is alive and nothing is being missed
+  restore   put an archived session back where its harness resumes it
+  status    one-screen health summary
+  search    find text across archived sessions
+  sessions  list archived sessions, newest first
+  outline   skim one archived session, one line per turn
+  show      read turns from one archived session
+  query     run one read-only SELECT against the search cache`);
 	});
 
 	test("search defaults to prose roles and reports matching excluded roles", async () => {

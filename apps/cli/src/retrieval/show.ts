@@ -1,18 +1,35 @@
 import { PackbatError } from "../core/errors.js";
 import { getReader } from "../readers/registry.js";
+import {
+	capTurnsByCount,
+	capTurnsByText,
+	type RenderedTurnRange,
+	type RequestedTurnRange,
+	selectTurnRange,
+} from "./range.js";
 import type { ArchivedRetrievalUnit, ReadUnitResult } from "./types.js";
+
+export interface ShowUnit {
+	key: string;
+	id: string;
+	harness: ArchivedRetrievalUnit["harness"];
+	machine: string;
+	projects: string[];
+	startedAt: string | null;
+	updatedAt: string | null;
+}
+
+export interface ShowWarning {
+	code: string;
+	unit: string;
+	source: string;
+	line: number | null;
+	detail: string;
+}
 
 export interface ShowResult {
 	v: 1;
-	unit: {
-		key: string;
-		id: string;
-		harness: ArchivedRetrievalUnit["harness"];
-		machine: string;
-		projects: string[];
-		startedAt: string | null;
-		updatedAt: string | null;
-	};
+	unit: ShowUnit;
 	turns: Array<{
 		turn: number;
 		timestamp: string | null;
@@ -22,13 +39,32 @@ export interface ShowResult {
 		filesTouched: string[];
 		commands: string[];
 	}>;
-	warnings: Array<{
-		code: string;
-		unit: string;
-		source: string;
-		line: number | null;
-		detail: string;
+	range: RenderedTurnRange;
+	truncated: boolean;
+	next: { from: number; to: number } | null;
+	warnings: ShowWarning[];
+}
+
+export interface OutlineResult {
+	v: 1;
+	unit: ShowUnit;
+	turns: Array<{
+		turn: number;
+		role: "user" | "assistant" | "tool" | "summary";
+		timestamp: string | null;
+		chars: number;
+		head: string;
 	}>;
+	range: RenderedTurnRange;
+	truncated: boolean;
+	next: { from: number; to: number } | null;
+	warnings: ShowWarning[];
+}
+
+export interface OutlineReadResult {
+	result: OutlineResult;
+	totalTurns: number;
+	totalChars: number;
 }
 
 export function resolveShowUnit(units: readonly ArchivedRetrievalUnit[], value: string): ArchivedRetrievalUnit {
@@ -71,25 +107,48 @@ function assertServeable(unit: ArchivedRetrievalUnit, result: ReadUnitResult): v
 	throw new PackbatError(`archived unit cannot be read:\n${lines.join("\n")}`);
 }
 
-export async function readShowUnit(unit: ArchivedRetrievalUnit): Promise<ShowResult> {
-	const result = await getReader(unit.harness).read(unit);
-	assertServeable(unit, result);
+function unitSummary(unit: ArchivedRetrievalUnit, result: ReadUnitResult): ShowUnit {
 	const projects = [...new Set(result.turns.flatMap((turn) => (turn.project === null ? [] : [turn.project])))].sort();
 	const timestamps = result.turns
 		.flatMap((turn) => (turn.timestamp === null ? [] : [turn.timestamp]))
 		.sort((left, right) => left.localeCompare(right));
 	return {
+		key: unit.key,
+		id: unit.id,
+		harness: unit.harness,
+		machine: unit.machine,
+		projects,
+		startedAt: timestamps[0] ?? null,
+		updatedAt: timestamps.at(-1) ?? null,
+	};
+}
+
+function warnings(unit: ArchivedRetrievalUnit, result: ReadUnitResult): ShowWarning[] {
+	return result.issues.map((issue) => ({
+		code: issue.code,
+		unit: unit.key,
+		source: issue.sourcePath,
+		line: issue.sourceLine,
+		detail: issue.detail,
+	}));
+}
+
+function head(text: string): string {
+	return text.replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+export async function readShowUnit(
+	unit: ArchivedRetrievalUnit,
+	requestedRange: RequestedTurnRange | null = null,
+	all = false,
+): Promise<ShowResult> {
+	const result = await getReader(unit.harness).read(unit);
+	assertServeable(unit, result);
+	const selected = capTurnsByText(selectTurnRange(result.turns, requestedRange), all);
+	return {
 		v: 1,
-		unit: {
-			key: unit.key,
-			id: unit.id,
-			harness: unit.harness,
-			machine: unit.machine,
-			projects,
-			startedAt: timestamps[0] ?? null,
-			updatedAt: timestamps.at(-1) ?? null,
-		},
-		turns: result.turns.map((turn) => ({
+		unit: unitSummary(unit, result),
+		turns: selected.turns.map((turn) => ({
 			turn: turn.turn,
 			timestamp: turn.timestamp,
 			project: turn.project,
@@ -98,12 +157,37 @@ export async function readShowUnit(unit: ArchivedRetrievalUnit): Promise<ShowRes
 			filesTouched: turn.filesTouched,
 			commands: turn.commands,
 		})),
-		warnings: result.issues.map((issue) => ({
-			code: issue.code,
-			unit: unit.key,
-			source: issue.sourcePath,
-			line: issue.sourceLine,
-			detail: issue.detail,
-		})),
+		range: selected.range,
+		truncated: selected.truncated,
+		next: selected.next,
+		warnings: warnings(unit, result),
+	};
+}
+
+export async function readOutlineUnit(
+	unit: ArchivedRetrievalUnit,
+	requestedRange: RequestedTurnRange | null = null,
+): Promise<OutlineReadResult> {
+	const read = await getReader(unit.harness).read(unit);
+	assertServeable(unit, read);
+	const selected = capTurnsByCount(selectTurnRange(read.turns, requestedRange));
+	return {
+		result: {
+			v: 1,
+			unit: unitSummary(unit, read),
+			turns: selected.turns.map((turn) => ({
+				turn: turn.turn,
+				role: turn.role,
+				timestamp: turn.timestamp,
+				chars: turn.text.length,
+				head: head(turn.text),
+			})),
+			range: selected.range,
+			truncated: selected.truncated,
+			next: selected.next,
+			warnings: warnings(unit, read),
+		},
+		totalTurns: read.turns.length,
+		totalChars: read.turns.reduce((sum, turn) => sum + turn.text.length, 0),
 	};
 }
