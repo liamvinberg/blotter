@@ -1,8 +1,85 @@
+import { loadConfig } from "../core/config.js";
+import { resolveHome } from "../core/home.js";
+import { withRetrievalLock } from "../core/lock.js";
+import { assertFts5, closeDatabase, openAndRefresh, retrievalDatabasePath } from "../retrieval/database.js";
+import { queryRetrieval, type RetrievalQueryResult } from "../retrieval/query.js";
+
 // DRAFT copy. Usage is pinned byte-for-byte by the retrieval contract.
 const USAGE = "Usage: packbat query <select-sql> [--json]\n";
 
-// Stub: issue #53 (agent-funnel wave) fills this in.
-export async function runQuery(_argv: string[]): Promise<number> {
-	process.stderr.write(USAGE);
-	return 1;
+interface QueryOptions {
+	sql: string;
+	json: boolean;
+}
+
+function usageError(message: string): null {
+	// DRAFT copy
+	process.stderr.write(`packbat query: ${message}\n\n${USAGE}`);
+	return null;
+}
+
+function parseOptions(argv: string[]): QueryOptions | null {
+	let sql: string | null = null;
+	let json = false;
+	for (const argument of argv) {
+		if (argument === "--json") {
+			if (json) return usageError("--json may only be passed once");
+			json = true;
+		} else if (argument.startsWith("-")) {
+			return usageError(`unknown option ${argument}`);
+		} else if (sql !== null) {
+			return usageError("only one SQL statement may be passed");
+		} else {
+			sql = argument;
+		}
+	}
+	if (sql === null) return usageError("a SELECT is required");
+	if (!/^\s*(select|with)\b/i.test(sql)) return usageError("query must start with SELECT or WITH");
+	if (/;[\s\S]*\S/.test(sql)) {
+		return usageError("only one statement is allowed; semicolons inside strings are not supported");
+	}
+	return { sql, json };
+}
+
+function plainValue(value: unknown): string {
+	if (value === null) return "";
+	if (typeof value === "string") {
+		return value.replaceAll("\t", "\\t").replaceAll("\n", "\\n").replaceAll("\r", "\\r");
+	}
+	return String(value);
+}
+
+function printPlain(result: RetrievalQueryResult): void {
+	process.stdout.write(`${result.columns.join("\t")}\n`);
+	for (const row of result.rows) {
+		process.stdout.write(`${row.map(plainValue).join("\t")}\n`);
+	}
+	if (result.truncated) {
+		// DRAFT copy
+		process.stdout.write("capped at 200 rows · add a LIMIT to your query\n");
+	}
+}
+
+export async function runQuery(argv: string[]): Promise<number> {
+	const options = parseOptions(argv);
+	if (options === null) return 1;
+	assertFts5();
+	const home = resolveHome();
+	const config = loadConfig(home);
+	const locked = await withRetrievalLock(home.statePath, async () => {
+		const database = await openAndRefresh(home, config);
+		closeDatabase(database);
+	});
+	if (!locked.acquired) {
+		// DRAFT copy
+		process.stderr.write("packbat query: retrieval is already running\n");
+		return 1;
+	}
+	const result = queryRetrieval(retrievalDatabasePath(home), options.sql);
+	if (options.json) {
+		process.stdout.write(`${JSON.stringify({ v: 1, ...result })}\n`);
+	} else {
+		printPlain(result);
+	}
+	return 0;
 }
