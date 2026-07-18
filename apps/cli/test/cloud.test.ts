@@ -164,6 +164,111 @@ describe("Packbat Cloud managed remote", () => {
 		expect(await readFile(join(layout.packbatHome, "config.json"), "utf8")).not.toContain("machineRemoteId");
 	});
 
+	test("uploads the backfill concurrently and never re-uploads checkpointed objects after a failure", async () => {
+		const layout = await cloudLayout();
+		const { recipient } = await generateTestIdentity();
+		const machineRemoteId = "abcdefghijklmnopqrstuvwx";
+		await writeCredentials(layout.packbatHome);
+		for (let index = 0; index < 12; index += 1) {
+			await makeClaudeStore(layout.claudeRoot, {
+				id: `00000000-0000-4000-8000-0000000000${String(index).padStart(2, "0")}`,
+				encodedCwd: "-synthetic-project",
+			});
+		}
+		await writeFile(
+			join(layout.packbatHome, "config.json"),
+			`${JSON.stringify({
+				version: 2,
+				machine: "cloud-machine",
+				archiveRoot: layout.archiveRoot,
+				sweep: { intervalMinutes: 60 },
+				offbox: { mode: "configured", recipient, remotes: [{ type: "cloud", machineRemoteId }] },
+			})}\n`,
+		);
+
+		const putCounts = new Map<string, number>();
+		const reservationsById = new Map<string, string>();
+		let acceptedData = 0;
+		let inflight = 0;
+		let peakInflight = 0;
+		let failAfter = 5;
+		const baseUrl = await listen(async (request, response, origin) => {
+			const url = new URL(request.url ?? "/", origin);
+			if (url.pathname === "/v1/downloads") {
+				json(response, 404, { error: "object_not_found" });
+				return;
+			}
+			if (url.pathname === "/v1/machines" && request.method === "GET") {
+				json(response, 200, { machines: [] });
+				return;
+			}
+			if (url.pathname === "/v1/uploads/reservations") {
+				const input = JSON.parse((await body(request)).toString("utf8")) as { logicalObjectKey: string };
+				const key = input.logicalObjectKey;
+				if (key !== "index.jsonl.age") {
+					if (acceptedData >= failAfter) {
+						reject(response);
+						return;
+					}
+					acceptedData += 1;
+					inflight += 1;
+					peakInflight = Math.max(peakInflight, inflight);
+				}
+				const id = randomUUID();
+				reservationsById.set(id, key);
+				json(response, 201, {
+					reservationId: id,
+					state: "pending",
+					upload: {
+						expiresAt: "2099-01-01T00:00:00.000Z",
+						headers: { "Content-Type": "application/octet-stream" },
+						url: `${origin}/uploads/${id}`,
+					},
+				});
+				return;
+			}
+			if (url.pathname.startsWith("/uploads/") && request.method === "PUT") {
+				const key = reservationsById.get(url.pathname.slice("/uploads/".length));
+				if (key === undefined) throw new Error("unknown reservation");
+				await body(request);
+				putCounts.set(key, (putCounts.get(key) ?? 0) + 1);
+				response.writeHead(200);
+				response.end();
+				return;
+			}
+			if (url.pathname.match(/^\/v1\/uploads\/[^/]+\/finalize$/u)) {
+				const key = reservationsById.get(url.pathname.split("/").at(-2) ?? "");
+				if (key === undefined) throw new Error("unknown reservation");
+				if (key !== "index.jsonl.age") inflight -= 1;
+				json(response, 200, { etag: `etag-${putCounts.size}` });
+				return;
+			}
+			reject(response);
+		});
+		const env = { ...layout.env, PACKBAT_CLOUD_API_URL: baseUrl };
+
+		const first = await runCli(["sync"], { home: layout.home, env });
+		expect(first.code, `${first.stdout}${first.stderr}`).toBe(1);
+		expect(`${first.stdout}${first.stderr}`).toContain("off-box");
+		const offboxState = join(layout.packbatHome, "state", "offbox");
+		const [stateHash] = await readdir(offboxState);
+		const uploadedPath = join(offboxState, stateHash ?? "", "uploaded.jsonl");
+		const checkpointedLines = (await readFile(uploadedPath, "utf8")).split("\n").filter((line) => line.trim() !== "");
+		expect(checkpointedLines.length).toBe(5);
+
+		failAfter = Number.POSITIVE_INFINITY;
+		const second = await runCli(["sync"], { home: layout.home, env });
+		expect(second.code, `${second.stdout}${second.stderr}`).toBe(0);
+		expect(peakInflight).toBeGreaterThanOrEqual(2);
+		const dataKeys = [...putCounts.keys()].filter((key) => key !== "index.jsonl.age");
+		expect(dataKeys.length).toBeGreaterThan(5);
+		for (const [key, count] of putCounts) {
+			expect(count, `object ${key} uploaded ${count} times`).toBe(1);
+		}
+		const finalLines = (await readFile(uploadedPath, "utf8")).split("\n").filter((line) => line.trim() !== "");
+		expect(finalLines.length).toBe(dataKeys.length);
+	}, 60_000);
+
 	test("backfills through exact-object uploads, commits the index last, and reports entitlement state", async () => {
 		const layout = await cloudLayout();
 		const { identity, recipient } = await generateTestIdentity();

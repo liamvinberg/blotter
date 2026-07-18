@@ -27,7 +27,8 @@ export interface ArchiveRemote {
 	readonly supportsMirror: boolean;
 	readonly mirrorHandleIsName: boolean;
 	indexExists(machine: string): Promise<boolean>;
-	putArchiveObjects(machine: string, sourceRoot: string): Promise<void>;
+	/** onObject fires per uploaded object with its machine-relative key; remotes without per-object events never call it. */
+	putArchiveObjects(machine: string, sourceRoot: string, onObject?: (key: string) => void): Promise<void>;
 	putIndex(machine: string, sourcePath: string): Promise<void>;
 	getIndex(machine: string, destinationPath: string): Promise<void>;
 	getArchiveObject(machine: string, archivePath: string, destinationPath: string): Promise<void>;
@@ -51,7 +52,7 @@ class RcloneArchiveRemote implements ArchiveRemote {
 		);
 	}
 
-	async putArchiveObjects(_machine: string, sourceRoot: string): Promise<void> {
+	async putArchiveObjects(_machine: string, sourceRoot: string, _onObject?: (key: string) => void): Promise<void> {
 		await copyTree(sourceRoot, this.config.destination, this.config.rcloneConfig);
 	}
 
@@ -89,6 +90,8 @@ class RcloneArchiveRemote implements ArchiveRemote {
 			.map((path) => path.slice(0, -".age".length));
 	}
 }
+
+const CLOUD_UPLOAD_CONCURRENCY = 8;
 
 interface CloudRemoteState {
 	v: 1;
@@ -157,18 +160,35 @@ class CloudArchiveRemote implements ArchiveRemote {
 		return (await cloudDownloadUrl(this.home, this.config.machineRemoteId, "index.jsonl.age")) !== null;
 	}
 
-	async putArchiveObjects(machine: string, sourceRoot: string): Promise<void> {
+	async putArchiveObjects(machine: string, sourceRoot: string, onObject?: (key: string) => void): Promise<void> {
 		this.sweepId = randomUUID();
 		const objects = await archiveCiphertexts(sourceRoot, machine);
 		this.expectedArchiveCount = objects.length;
-		for (const object of objects) {
-			await uploadCloudObject({
-				home: this.home,
-				machineRemoteId: this.config.machineRemoteId,
-				logicalObjectKey: object.key,
-				path: object.path,
-				sweepId: this.sweepId,
-			});
+		let nextIndex = 0;
+		let failure: { error: unknown } | undefined;
+		const workers = Array.from({ length: Math.min(CLOUD_UPLOAD_CONCURRENCY, objects.length) }, async () => {
+			while (failure === undefined) {
+				const object = objects[nextIndex];
+				nextIndex += 1;
+				if (object === undefined) return;
+				try {
+					await uploadCloudObject({
+						home: this.home,
+						machineRemoteId: this.config.machineRemoteId,
+						logicalObjectKey: object.key,
+						path: object.path,
+						sweepId: this.sweepId,
+					});
+					onObject?.(object.key);
+				} catch (error) {
+					failure ??= { error };
+					return;
+				}
+			}
+		});
+		await Promise.all(workers);
+		if (failure !== undefined) {
+			throw failure.error;
 		}
 	}
 

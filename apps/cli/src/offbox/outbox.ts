@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import {
 	type OffboxConfig,
 	type PackbatConfig,
@@ -167,6 +167,7 @@ async function publishRemote(
 	config: PackbatConfig,
 	offbox: ConfiguredOffbox,
 	remoteConfig: RemoteConfig,
+	onProgress?: (done: number, total: number) => void,
 ): Promise<RemotePublishOutcome> {
 	const machinePath = join(config.archiveRoot, config.machine);
 	const indexPath = join(machinePath, "index.jsonl");
@@ -207,8 +208,54 @@ async function publishRemote(
 	for (const file of changed) {
 		bytes += await encryptFile(file.absolutePath, join(outboxPath, `${file.path}.age`), offbox.recipient);
 	}
+	const objectKey = (file: ArchiveFile): string =>
+		`${file.path}.age`
+			.slice(config.machine.length + sep.length)
+			.split(sep)
+			.join("/");
+	const changedByKey = new Map(changed.map((file) => [objectKey(file), file]));
+	const checkpointed = new Set<string>();
+	let ledgerChain: Promise<void> = Promise.resolve();
+	let ledgerError: unknown;
+	let done = 0;
+	// Checkpoint the ledger per uploaded object so an interrupted backfill resumes
+	// where it stopped instead of re-uploading everything.
+	const checkpoint = (key: string): void => {
+		const file = changedByKey.get(key);
+		if (file === undefined) return;
+		checkpointed.add(file.path);
+		done += 1;
+		onProgress?.(done, changed.length);
+		ledgerChain = ledgerChain
+			.then(async () => {
+				await appendFile(
+					uploadedPath,
+					`${JSON.stringify({
+						v: 1,
+						path: file.path,
+						mtimeMs: file.mtimeMs,
+						uploadedAt: new Date().toISOString(),
+						recipient: offbox.recipient,
+						destination,
+						rcloneConfig,
+					})}\n`,
+				);
+			})
+			.catch((error: unknown) => {
+				ledgerError ??= error;
+			});
+	};
 	if (changed.length > 0) {
-		await remote.putArchiveObjects(config.machine, outboxPath);
+		await mkdir(statePath, { recursive: true });
+		onProgress?.(0, changed.length);
+		try {
+			await remote.putArchiveObjects(config.machine, outboxPath, checkpoint);
+		} finally {
+			await ledgerChain;
+		}
+		if (ledgerError !== undefined) {
+			throw ledgerError;
+		}
 	}
 
 	const indexContents = await readFile(indexPath);
@@ -221,11 +268,12 @@ async function publishRemote(
 	}
 
 	const finishedAt = new Date().toISOString();
-	if (changed.length > 0) {
+	const remaining = changed.filter((file) => !checkpointed.has(file.path));
+	if (remaining.length > 0) {
 		await mkdir(statePath, { recursive: true });
 		await appendFile(
 			uploadedPath,
-			`${changed
+			`${remaining
 				.map((file) =>
 					JSON.stringify({
 						v: 1,
@@ -259,11 +307,15 @@ export async function publishOffbox(
 	home: PackbatHome,
 	config: PackbatConfig,
 	offbox: ConfiguredOffbox,
+	onProgress?: (destination: string, done: number, total: number) => void,
 ): Promise<RemotePublishOutcome[]> {
 	const outcomes: RemotePublishOutcome[] = [];
 	for (const remote of offbox.remotes) {
 		try {
-			outcomes.push(await publishRemote(home, config, offbox, remote));
+			const destination = remoteDestination(remote);
+			outcomes.push(
+				await publishRemote(home, config, offbox, remote, (done, total) => onProgress?.(destination, done, total)),
+			);
 		} catch (error) {
 			outcomes.push({
 				destination: remoteDestination(remote),
