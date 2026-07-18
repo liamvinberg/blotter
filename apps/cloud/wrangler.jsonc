@@ -48,7 +48,7 @@
 		{
 			"name": "DOWNLOAD_RATE_LIMITER",
 			"namespace_id": "3303",
-			"simple": { "limit": 120, "period": 60 }
+			"simple": { "limit": 600, "period": 60 }
 		},
 		{
 			"name": "WEBHOOK_RATE_LIMITER",

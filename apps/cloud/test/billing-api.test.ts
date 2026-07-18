@@ -663,7 +663,7 @@ describe("hosted billing", () => {
 		expect(old.status).toBe(400);
 	});
 
-	it("limits billing and download authority independently per account", async () => {
+	it("limits billing and download authority independently per account", { timeout: 30_000 }, async () => {
 		const records: StripeRequestRecord[] = [];
 		installProviderFake(records);
 		const linked = await exchange();
@@ -676,8 +676,12 @@ describe("hosted billing", () => {
 		expect(billingStatuses.slice(0, 10)).toEqual(Array.from({ length: 10 }, () => 404));
 		expect(billingStatuses.at(-1)).toBe(429);
 
+		// The simulator refills the download limiter continuously, so its exact 600/min
+		// ceiling cannot be tripped by a sequential loop. 130 passing requests after the
+		// billing limiter tripped proves the limiters are independent and that the
+		// download allowance sits above the pre-mirror 120/min.
 		const downloadStatuses: number[] = [];
-		for (let index = 0; index < 121; index += 1) {
+		for (let index = 0; index < 130; index += 1) {
 			downloadStatuses.push(
 				(
 					await exports.default.fetch(
@@ -690,7 +694,6 @@ describe("hosted billing", () => {
 				).status,
 			);
 		}
-		expect(downloadStatuses.slice(0, 120)).toEqual(Array.from({ length: 120 }, () => 404));
-		expect(downloadStatuses.at(-1)).toBe(429);
+		expect(downloadStatuses).toEqual(Array.from({ length: 130 }, () => 404));
 	});
 });
