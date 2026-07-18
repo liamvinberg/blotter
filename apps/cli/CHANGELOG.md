@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2](https://github.com/liamvinberg/packbat/compare/v0.3.1...v0.3.2) (2026-07-18)
+
+
+### Bug fixes
+
+* interactive cli harness timeout resets on output ([73175f4](https://github.com/liamvinberg/packbat/commit/73175f4aee217c2a2f18a7376848f55a802f6654))
+
+
+### Polish
+
+* busy spinner names the sync lock holder ([16ae41b](https://github.com/liamvinberg/packbat/commit/16ae41be344818565a814d13f3df1b4740ed66e0))
+
 ## [0.3.1](https://github.com/liamvinberg/packbat/compare/v0.3.0...v0.3.1) (2026-07-18)
 
 
