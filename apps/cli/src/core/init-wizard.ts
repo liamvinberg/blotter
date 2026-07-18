@@ -34,6 +34,7 @@ import { errorMessage, PackbatError } from "./errors.js";
 import { commandOnPath } from "./exec.js";
 import { expandTilde } from "./fs.js";
 import { resolveHome } from "./home.js";
+import { readLockHolder } from "./lock.js";
 import { writePrivateFile } from "./private-file.js";
 import {
 	createInitScheduleOptions,
@@ -660,6 +661,14 @@ async function configureOffbox(config: PackbatConfig, homePath: string): Promise
 	return { kind: "configured", config: await writeInitConfig(home, config.archiveRoot, offbox), offbox, identity };
 }
 
+async function busySyncMessage(statePath: string): Promise<string> {
+	const holder = await readLockHolder(statePath, "sync");
+	const started = holder === null ? Number.NaN : new Date(holder.startedAt).getTime();
+	if (Number.isNaN(started)) return "Waiting for the running sync";
+	const time = new Date(started).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+	return `Waiting for the sync that started at ${time} to finish`; // DRAFT copy
+}
+
 export interface InitWizardActions {
 	doctor: () => Promise<number>;
 	sync: (output: { writeSummary: false; onSummary: (summary: string) => void; onBusy: () => void }) => Promise<number>;
@@ -764,7 +773,7 @@ export async function runInitWizardWorkflow(
 		});
 		if (!busy) break;
 		if (sweepCancelled) return 1;
-		sweep.message("Waiting for the running sync");
+		sweep.message(await busySyncMessage(home.statePath));
 		await new Promise((resolve) => setTimeout(resolve, 250));
 	}
 	if (syncCode === 1) {

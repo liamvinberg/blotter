@@ -625,4 +625,38 @@ describe.sequential("interactive init wizard", () => {
 		const config = JSON.parse(await readFile(join(packbatHome, "config.json"), "utf8")) as { archiveRoot: string };
 		expect(config.archiveRoot).toBe(join(home, "custom-archive"));
 	}, 60_000);
+
+	test("names the lock holder while waiting for a running sync", async () => {
+		const home = await makeTempHome();
+		homes.push(home);
+		const packbatHome = join(home, ".packbat");
+		const remoteRoot = join(home, "remote");
+		const statePath = join(packbatHome, "state");
+		const lockPath = join(statePath, "sync.lock");
+		await mkdir(statePath, { recursive: true });
+		await writeFile(lockPath, `${JSON.stringify({ pid: process.pid, startedAt: "2026-07-18T10:18:51.325Z" })}\n`);
+
+		const result = await runInteractiveCli(["init", "--no-activate"], { home, env: { PACKBAT_HOME: packbatHome } }, [
+			{ waitFor: "Archive root", reply: enter() },
+			{ waitFor: "Install this schedule?", reply: enter() },
+			{ waitFor: "Off-box destination", reply: moveUp(1) },
+			{ waitFor: "Server connection", reply: moveDown(1) },
+			{ waitFor: "Rclone destination", reply: enter(remoteRoot) },
+			{ waitFor: "Rclone config", reply: enter() },
+			{ waitFor: "Encryption key", reply: enter() },
+			{ waitFor: "Recovery kit destination", reply: enter() },
+			{ waitFor: "Recovery kit path", reply: enter() },
+			{
+				waitFor: "Waiting for the sync that started at",
+				async reply() {
+					await rm(lockPath, { force: true });
+					return "";
+				},
+			},
+		]);
+
+		const output = `${result.stdout}${result.stderr}`;
+		expect(result.code, output).toBe(0);
+		expect(output).toContain("Waiting for the sync that started at");
+	}, 60_000);
 });

@@ -7,9 +7,25 @@ export type SyncLockResult<T> = { acquired: true; value: T } | { acquired: false
 const RETRIEVAL_LOCK_POLL_INTERVAL_MS = 250;
 const RETRIEVAL_LOCK_WAIT_TIMEOUT_MS = 15_000;
 
-interface LockContents {
+export interface LockContents {
 	pid: number;
 	startedAt: string;
+}
+
+export async function readLockHolder(statePath: string, name: string): Promise<LockContents | null> {
+	try {
+		const parsed: unknown = JSON.parse(await readFile(join(statePath, `${name}.lock`), "utf8"));
+		if (typeof parsed !== "object" || parsed === null || !("pid" in parsed) || !("startedAt" in parsed)) {
+			return null;
+		}
+		const { pid, startedAt } = parsed as { pid: unknown; startedAt: unknown };
+		return typeof pid === "number" && typeof startedAt === "string" ? { pid, startedAt } : null;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+			return null;
+		}
+		throw error;
+	}
 }
 
 function isProcessAlive(pid: number): boolean {
