@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/liamvinberg/packbat/compare/v0.3.2...v0.4.0) (2026-07-18)
+
+
+### Features
+
+* concurrent resumable cloud backfill ([246a2c8](https://github.com/liamvinberg/packbat/commit/246a2c8049c9a71518641a96f04700443e785c75))
+* off-box upload progress in sync and init ([44ae840](https://github.com/liamvinberg/packbat/commit/44ae840d12054a071fc3b505693016ade2aba183))
+* retrieval verbs serve the existing index during refresh ([63626e9](https://github.com/liamvinberg/packbat/commit/63626e9f26eb31a26a6f6c43cc65169c25fd1c3c))
+
+
+### Polish
+
+* first sync expectation line in init ([f7da2c7](https://github.com/liamvinberg/packbat/commit/f7da2c7feb90cb026ed04474bc016ceb64c5f026))
+
 ## [0.3.2](https://github.com/liamvinberg/packbat/compare/v0.3.1...v0.3.2) (2026-07-18)
 
 
