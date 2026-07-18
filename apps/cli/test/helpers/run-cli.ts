@@ -132,10 +132,17 @@ sys.exit(os.waitstatus_to_exitcode(status))
 		let stderr = "";
 		let stepIndex = 0;
 		let responding = false;
-		const timeout = setTimeout(() => {
-			reject(new Error(`interactive CLI timed out after step ${stepIndex}:\n${stdout}${stderr}`));
-			child.kill();
-		}, 15_000);
+		// Idle-based: a stuck prompt goes silent, while a slow CI runner mid-sync keeps
+		// emitting spinner frames, so only silence may fail the run.
+		let timeout: NodeJS.Timeout;
+		const armTimeout = (): void => {
+			clearTimeout(timeout);
+			timeout = setTimeout(() => {
+				reject(new Error(`interactive CLI went silent after step ${stepIndex}:\n${stdout}${stderr}`));
+				child.kill();
+			}, 15_000);
+		};
+		armTimeout();
 		const advance = async (): Promise<void> => {
 			if (responding) return;
 			const step = steps[stepIndex];
@@ -154,10 +161,12 @@ sys.exit(os.waitstatus_to_exitcode(status))
 		};
 		child.stdout.on("data", (chunk: Buffer) => {
 			stdout += chunk.toString("utf8");
+			armTimeout();
 			void advance();
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString("utf8");
+			armTimeout();
 			void advance();
 		});
 		child.on("error", reject);
