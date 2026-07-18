@@ -750,6 +750,9 @@ export async function runInitWizardWorkflow(
 	if (configured === WIZARD_CANCELLED) return 1;
 	config = configured.config;
 
+	if (configured.kind === "configured") {
+		log.info("The first sync uploads the whole archive off-box. A large archive can take a while."); // DRAFT copy
+	}
 	let sweepCancelled = false;
 	const sweep = spinner({
 		onCancel() {

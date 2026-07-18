@@ -658,5 +658,6 @@ describe.sequential("interactive init wizard", () => {
 		const output = `${result.stdout}${result.stderr}`;
 		expect(result.code, output).toBe(0);
 		expect(output).toContain("Waiting for the sync that started at");
+		expect(output).toContain("The first sync uploads the whole archive off-box.");
 	}, 60_000);
 });
