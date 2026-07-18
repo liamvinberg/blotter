@@ -5,7 +5,7 @@ import { type OffboxConfig, type PackbatConfig, remoteDestination, remoteStatePa
 import { PackbatError } from "../core/errors.js";
 import { isEnoent } from "../core/fs.js";
 import type { PackbatHome } from "../core/home.js";
-import { readIndex } from "../core/index.js";
+import { type ArchiveIndexRecord, readIndex } from "../core/index.js";
 import { appendLog } from "../core/log.js";
 import { writeAtomicJson } from "../core/stamps.js";
 import { decryptWithIdentity, parseIdentityFile } from "./age.js";
@@ -66,11 +66,24 @@ async function pullObject(options: {
 	remoteMachine: string;
 	objectPath: string;
 	destination: string;
-	sha256: string | undefined;
-	mtimeMs: number | undefined;
+	record: ArchiveIndexRecord | undefined;
 }): Promise<boolean> {
 	if (await fileExists(options.destination)) {
-		return false;
+		if (options.record === undefined) {
+			return false;
+		}
+		const localStat = await stat(options.destination);
+		if (localStat.mtimeMs === options.record.sourceMtimeMs) {
+			return false;
+		}
+		const actual = createHash("sha256")
+			.update(await readFile(options.destination))
+			.digest("hex");
+		if (actual === options.record.sha256) {
+			const mtime = new Date(options.record.sourceMtimeMs);
+			await utimes(options.destination, mtime, mtime);
+			return false;
+		}
 	}
 	await mkdir(dirname(options.destination), { recursive: true });
 	const ciphertextPath = temporaryPath(options.destination, "ciphertext");
@@ -78,15 +91,15 @@ async function pullObject(options: {
 	try {
 		await options.remote.getArchiveObject(options.remoteMachine, options.objectPath, ciphertextPath);
 		const plaintext = await decryptWithIdentity(options.identity, await readFile(ciphertextPath));
-		if (options.sha256 !== undefined) {
+		if (options.record !== undefined) {
 			const actual = createHash("sha256").update(plaintext).digest("hex");
-			if (actual !== options.sha256) {
+			if (actual !== options.record.sha256) {
 				throw new PackbatError(`sha256 mismatch for ${options.localMachine}/${options.objectPath}`);
 			}
 		}
 		await writeFile(plaintextPath, plaintext);
-		if (options.mtimeMs !== undefined) {
-			const mtime = new Date(options.mtimeMs);
+		if (options.record !== undefined) {
+			const mtime = new Date(options.record.sourceMtimeMs);
 			await utimes(plaintextPath, mtime, mtime);
 		}
 		await rename(plaintextPath, options.destination);
@@ -142,6 +155,9 @@ async function mirrorMachine(options: {
 
 		let pulled = 0;
 		const errors: string[] = [];
+		const listedObjectPaths = new Set(objects);
+		const verifiedRecords = new Set<string>();
+		const failedRecords = new Set<string>();
 		for (const objectPath of objects) {
 			const parts = safeRelativeParts(objectPath);
 			if (parts === null) {
@@ -158,13 +174,18 @@ async function mirrorMachine(options: {
 						remoteMachine: options.handle,
 						objectPath,
 						destination: join(machineRoot, ...parts),
-						sha256: record?.sha256,
-						mtimeMs: record?.sourceMtimeMs,
+						record,
 					})
 				) {
 					pulled += 1;
 				}
+				if (record !== undefined) {
+					verifiedRecords.add(record.path);
+				}
 			} catch (error) {
+				if (record !== undefined) {
+					failedRecords.add(record.path);
+				}
 				errors.push(`${localMachine}/${objectPath}: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
@@ -173,6 +194,18 @@ async function mirrorMachine(options: {
 			const parts = safeRelativeParts(record.path);
 			if (parts === null) {
 				errors.push(`${localMachine}/${record.path}: unsafe index path`);
+				continue;
+			}
+			if (!listedObjectPaths.has(record.path)) {
+				// DRAFT copy
+				errors.push(`${localMachine}/${record.path}: indexed object is missing from remote listing`);
+				continue;
+			}
+			if (!verifiedRecords.has(record.path)) {
+				if (!failedRecords.has(record.path)) {
+					// DRAFT copy
+					errors.push(`${localMachine}/${record.path}: indexed object was not verified`);
+				}
 				continue;
 			}
 			try {

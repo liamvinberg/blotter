@@ -262,7 +262,18 @@ async function liveMtime(path: string): Promise<number | null> {
 	}
 }
 
-async function writeRestoredFile(plan: RestorePlan): Promise<void> {
+function shaMismatchError(file: ArchivedFile, currentMachine: string): PackbatError {
+	if (file.record.machine !== currentMachine) {
+		// DRAFT copy
+		return new PackbatError(
+			`mirrored copy is behind its index: ${file.archivePath} (sha256 mismatch); run \`packbat sync\` to refresh it`,
+		);
+	}
+	// DRAFT copy
+	return new PackbatError(`archived file is corrupt: ${file.archivePath} (sha256 mismatch); run \`packbat doctor\``);
+}
+
+async function writeRestoredFile(plan: RestorePlan, currentMachine: string): Promise<void> {
 	let archivedBytes: Buffer;
 	try {
 		archivedBytes = await readFile(plan.file.archivePath);
@@ -271,7 +282,7 @@ async function writeRestoredFile(plan: RestorePlan): Promise<void> {
 	}
 	const actualSha256 = createHash("sha256").update(archivedBytes).digest("hex");
 	if (actualSha256 !== plan.file.record.sha256) {
-		throw new PackbatError(`archived file is corrupt: ${plan.file.archivePath} (sha256 mismatch)`);
+		throw shaMismatchError(plan.file, currentMachine);
 	}
 	let bytes: Buffer;
 	try {
@@ -292,7 +303,7 @@ async function writeRestoredFile(plan: RestorePlan): Promise<void> {
 	}
 }
 
-async function archivedPayload(file: ArchivedFile): Promise<Buffer> {
+async function archivedPayload(file: ArchivedFile, currentMachine: string): Promise<Buffer> {
 	let archivedBytes: Buffer;
 	try {
 		archivedBytes = await readFile(file.archivePath);
@@ -301,7 +312,7 @@ async function archivedPayload(file: ArchivedFile): Promise<Buffer> {
 	}
 	const actualSha256 = createHash("sha256").update(archivedBytes).digest("hex");
 	if (actualSha256 !== file.record.sha256) {
-		throw new PackbatError(`archived file is corrupt: ${file.archivePath} (sha256 mismatch)`);
+		throw shaMismatchError(file, currentMachine);
 	}
 	try {
 		return decompressBytes(archivedBytes);
@@ -315,7 +326,7 @@ function sideBySidePath(target: string, sessionId: string): string {
 	return join(dirname(target), `opencode-restored-${sessionId}.db`);
 }
 
-async function restoreDatabaseSnapshot(unit: ArchivedUnit): Promise<RestoreResult> {
+async function restoreDatabaseSnapshot(unit: ArchivedUnit, currentMachine: string): Promise<RestoreResult> {
 	const adapter = getAdapter(unit.harness);
 	if (adapter === undefined || adapter.mutationModel !== "db-snapshot") {
 		// DRAFT copy
@@ -334,7 +345,7 @@ async function restoreDatabaseSnapshot(unit: ArchivedUnit): Promise<RestoreResul
 		// DRAFT copy
 		throw new PackbatError(`invalid database snapshot archive for ${unit.id}`);
 	}
-	const bytes = await archivedPayload(file);
+	const bytes = await archivedPayload(file, currentMachine);
 	const contentSha256 = createHash("sha256").update(bytes).digest("hex");
 	if (contentSha256 !== file.record.contentSha256) {
 		// DRAFT copy
@@ -368,9 +379,13 @@ async function restoreDatabaseSnapshot(unit: ArchivedUnit): Promise<RestoreResul
 	};
 }
 
-export async function restoreArchivedUnit(unit: ArchivedUnit, force: boolean): Promise<RestoreResult> {
+export async function restoreArchivedUnit(
+	unit: ArchivedUnit,
+	force: boolean,
+	currentMachine: string,
+): Promise<RestoreResult> {
 	if (unit.kind === "db-snapshot") {
-		return await restoreDatabaseSnapshot(unit);
+		return await restoreDatabaseSnapshot(unit, currentMachine);
 	}
 	const adapter = getAdapter(unit.harness);
 	if (adapter === undefined || adapter.mutationModel === "db-snapshot") {
@@ -408,7 +423,7 @@ export async function restoreArchivedUnit(unit: ArchivedUnit, force: boolean): P
 	}
 
 	for (const plan of plans) {
-		await writeRestoredFile(plan);
+		await writeRestoredFile(plan, currentMachine);
 	}
 	return {
 		fileCount: plans.length,

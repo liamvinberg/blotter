@@ -128,7 +128,11 @@ export async function restoreFromRemote(options: {
 				label: `remote file ${file.record.path}`,
 			});
 		}
-		return { kind: "restored", unit, restore: await restoreArchivedUnit(unit, options.force) };
+		return {
+			kind: "restored",
+			unit,
+			restore: await restoreArchivedUnit(unit, options.force, options.config.machine),
+		};
 	} finally {
 		await rm(stagePath, { recursive: true, force: true });
 	}

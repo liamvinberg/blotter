@@ -342,7 +342,9 @@ describe("packbat restore", () => {
 		const refused = await runCli(["restore", "--force", claude.id], { home: layout.home, env: layout.env });
 
 		expect(refused.code).toBe(1);
-		expect(refused.stderr).toContain(`archived file is corrupt: ${corruptPath} (sha256 mismatch)`);
+		expect(refused.stderr).toContain(
+			`archived file is corrupt: ${corruptPath} (sha256 mismatch); run \`packbat doctor\``,
+		);
 		for (const file of claude.files) {
 			await expectMissing(file.absPath);
 		}
@@ -350,6 +352,42 @@ describe("packbat restore", () => {
 		const intact = await runCli(["restore", codex.id], { home: layout.home, env: layout.env });
 		expect(intact.code).toBe(0);
 		await expectRestored(layout.codexRoot, codexSnapshot);
+	});
+
+	test("reports a stale mirrored payload as behind its foreign index", async () => {
+		const layout = await makeLayout();
+		await writeConfig(layout, layout.packbatHome, "newbox");
+		const foreignMachine = "oldbox";
+		const fixture = await makeClaudeStore(join(layout.home, "foreign-store"), {
+			main: { mtimeMs: SOURCE_MTIME_MS },
+			sidecars: [],
+		});
+		const archived = await writeArchivedBytes({
+			layout,
+			machine: foreignMachine,
+			harness: "claude-code",
+			unit: fixture.id,
+			relPath: fixture.files[0]!.relPath,
+			role: "main",
+			source: fixture.files[0]!.absPath,
+			raw: await readFile(fixture.files[0]!.absPath),
+			mtimeMs: SOURCE_MTIME_MS,
+			includeIndex: true,
+		});
+		const staleBytes = await readFile(archived.archivePath);
+		staleBytes[Math.floor(staleBytes.byteLength / 2)]! ^= 1;
+		await writeFile(archived.archivePath, staleBytes);
+
+		const refused = await runCli(["restore", "--machine", foreignMachine, fixture.id], {
+			home: layout.home,
+			env: layout.env,
+		});
+
+		expect(refused.code).toBe(1);
+		expect(refused.stdout).toBe("");
+		expect(refused.stderr).toContain(
+			`mirrored copy is behind its index: ${archived.archivePath} (sha256 mismatch); run \`packbat sync\` to refresh it`,
+		);
 	});
 
 	test("resolves unique prefixes and reports ambiguous, unknown, and unsupported arguments", async () => {

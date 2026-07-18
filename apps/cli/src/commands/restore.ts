@@ -164,7 +164,7 @@ export async function runRestore(argv: string[]): Promise<number> {
 		return 0;
 	}
 	const unit = resolveArchivedUnit(units, options.prefix);
-	const result = await restoreArchivedUnit(unit, options.force);
+	const result = await restoreArchivedUnit(unit, options.force, config.machine);
 	printRestoreResult(unit, result);
 	return 0;
 }

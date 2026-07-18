@@ -1077,24 +1077,29 @@ machine remote: ${machineRemoteId}
 		const source = await readFile(fixture.files[0]!.absPath);
 		const archive = zstdCompressSync(source);
 		const archivePath = `claude-code/${fixture.id}.jsonl.zst`;
-		const index = Buffer.from(
-			`${JSON.stringify({
-				v: 1,
-				path: archivePath,
-				harness: "claude-code",
-				machine: foreignMachine,
-				unit: fixture.id,
-				role: "main",
-				source: "/synthetic/foreign-session.jsonl",
-				sourceMtimeMs: 1_767_322_645_000,
-				sourceSize: source.byteLength,
-				storedSize: archive.byteLength,
-				sha256: createHash("sha256").update(archive).digest("hex"),
-				archivedAt: "2026-01-02T03:04:05.000Z",
-			})}\n`,
-		);
+		const indexFor = (raw: Buffer, stored: Buffer, sourceMtimeMs: number): Buffer =>
+			Buffer.from(
+				`${JSON.stringify({
+					v: 1,
+					path: archivePath,
+					harness: "claude-code",
+					machine: foreignMachine,
+					unit: fixture.id,
+					role: "main",
+					source: "/synthetic/foreign-session.jsonl",
+					sourceMtimeMs,
+					sourceSize: raw.byteLength,
+					storedSize: stored.byteLength,
+					sha256: createHash("sha256").update(stored).digest("hex"),
+					archivedAt: "2026-01-02T03:04:05.000Z",
+				})}\n`,
+			);
+		const initialMtimeMs = 1_767_322_645_000;
 		const objects = new Map<string, Buffer>([
-			[`${foreignMachineRemoteId}/index.jsonl.age`, Buffer.from(await encryptToRecipient(recipient, index))],
+			[
+				`${foreignMachineRemoteId}/index.jsonl.age`,
+				Buffer.from(await encryptToRecipient(recipient, indexFor(source, archive, initialMtimeMs))),
+			],
 			[`${foreignMachineRemoteId}/${archivePath}.age`, Buffer.from(await encryptToRecipient(recipient, archive))],
 		]);
 		await mkdir(layout.packbatHome, { recursive: true });
@@ -1119,6 +1124,7 @@ machine remote: ${machineRemoteId}
 
 		const reservations = new Map<string, { key: string; machineRemoteId: string }>();
 		let foreignArchiveDownloads = 0;
+		let listForeignArchive = true;
 		const baseUrl = await listen(async (request, response, origin) => {
 			const url = new URL(request.url ?? "/", origin);
 			if (url.pathname === "/v1/machines" && request.method === "GET") {
@@ -1140,12 +1146,14 @@ machine remote: ${machineRemoteId}
 					});
 				} else {
 					json(response, 200, {
-						objects: [
-							{
-								key: `${archivePath}.age`,
-								size: objects.get(`${foreignMachineRemoteId}/${archivePath}.age`)!.byteLength,
-							},
-						],
+						objects: listForeignArchive
+							? [
+									{
+										key: `${archivePath}.age`,
+										size: objects.get(`${foreignMachineRemoteId}/${archivePath}.age`)!.byteLength,
+									},
+								]
+							: [],
 					});
 				}
 				return;
@@ -1222,5 +1230,67 @@ machine remote: ${machineRemoteId}
 		expect(second.code, second.stderr).toBe(0);
 		expect(second.stdout).not.toContain("mirrored");
 		expect(foreignArchiveDownloads).toBe(1);
+
+		const restampedMtimeMs = initialMtimeMs + 60_000;
+		objects.set(
+			`${foreignMachineRemoteId}/index.jsonl.age`,
+			Buffer.from(await encryptToRecipient(recipient, indexFor(source, archive, restampedMtimeMs))),
+		);
+		const restamped = await runCli(["sync"], { home: layout.home, env });
+		expect(restamped.code, restamped.stderr).toBe(0);
+		expect(restamped.stdout).not.toContain("mirrored");
+		expect(foreignArchiveDownloads).toBe(1);
+		expect((await stat(join(layout.archiveRoot, foreignMachine, archivePath))).mtimeMs).toBe(restampedMtimeMs);
+
+		const changedSource = Buffer.from(
+			`${source.toString("utf8")}${JSON.stringify({
+				type: "user",
+				uuid: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+				parentUuid: null,
+				sessionId: fixture.id,
+				timestamp: "2026-01-02T03:06:05.000Z",
+				cwd: "/synthetic/project",
+				message: { role: "user", content: "Foreign growth sentinel." },
+			})}\n`,
+		);
+		const changedArchive = zstdCompressSync(changedSource);
+		const changedMtimeMs = restampedMtimeMs + 60_000;
+		objects.set(
+			`${foreignMachineRemoteId}/${archivePath}.age`,
+			Buffer.from(await encryptToRecipient(recipient, changedArchive)),
+		);
+		objects.set(
+			`${foreignMachineRemoteId}/index.jsonl.age`,
+			Buffer.from(await encryptToRecipient(recipient, indexFor(changedSource, changedArchive, changedMtimeMs))),
+		);
+
+		const refreshed = await runCli(["sync"], { home: layout.home, env });
+		expect(refreshed.code, refreshed.stderr).toBe(0);
+		expect(refreshed.stdout).toContain("mirrored 1");
+		expect(foreignArchiveDownloads).toBe(2);
+		expect(await readFile(join(layout.archiveRoot, foreignMachine, archivePath))).toEqual(changedArchive);
+
+		const restored = await runCli(["restore", "--machine", foreignMachine, fixture.id], {
+			home: layout.home,
+			env,
+		});
+		expect(restored.code, restored.stderr).toBe(0);
+		expect(await readFile(join(layout.claudeRoot, `${fixture.id}.jsonl`))).toEqual(changedSource);
+
+		const localIndexPath = join(layout.archiveRoot, foreignMachine, "index.jsonl");
+		const installedIndex = await readFile(localIndexPath);
+		objects.set(
+			`${foreignMachineRemoteId}/index.jsonl.age`,
+			Buffer.from(
+				await encryptToRecipient(recipient, indexFor(changedSource, changedArchive, changedMtimeMs + 60_000)),
+			),
+		);
+		listForeignArchive = false;
+		const incomplete = await runCli(["sync"], { home: layout.home, env });
+		expect(incomplete.code).toBe(0);
+		expect(incomplete.stderr).toContain(
+			`${foreignMachine}/${archivePath}: indexed object is missing from remote listing`,
+		);
+		expect(await readFile(localIndexPath)).toEqual(installedIndex);
 	});
 });
