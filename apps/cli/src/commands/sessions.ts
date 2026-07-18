@@ -2,8 +2,7 @@ import { resolve } from "node:path";
 import { HARNESS_IDS, type HarnessId, isHarnessId } from "../adapters/adapter.js";
 import { loadConfig } from "../core/config.js";
 import { resolveHome } from "../core/home.js";
-import { withRetrievalLock } from "../core/lock.js";
-import { assertFts5, closeDatabase, openAndRefresh } from "../retrieval/database.js";
+import { assertFts5, readRetrieval } from "../retrieval/database.js";
 import { listSessions, type SessionFilters, type SessionSummary } from "../retrieval/sessions.js";
 
 // DRAFT copy. Usage is pinned byte-for-byte by the retrieval contract.
@@ -155,9 +154,10 @@ export async function runSessions(argv: string[]): Promise<number> {
 	assertFts5();
 	const home = resolveHome();
 	const config = loadConfig(home);
-	const locked = await withRetrievalLock(home.statePath, async () => {
-		const database = await openAndRefresh(home, config);
-		try {
+	const outcome = await readRetrieval(
+		home,
+		config,
+		(database) => {
 			const filters: SessionFilters = {
 				project: options.project,
 				since: options.since,
@@ -173,14 +173,18 @@ export async function runSessions(argv: string[]): Promise<number> {
 				printSessions(result.sessions, result.truncated, options.limit);
 			}
 			return 0;
-		} finally {
-			closeDatabase(database);
-		}
-	});
-	if (!locked.acquired) {
+		},
+		() => {
+			// DRAFT copy
+			process.stderr.write(
+				"packbat sessions: the retrieval index is refreshing, results may be missing the newest sessions\n",
+			);
+		},
+	);
+	if (outcome.kind === "building") {
 		// DRAFT copy
-		process.stderr.write("packbat sessions: retrieval is already running\n");
+		process.stderr.write("packbat sessions: the retrieval index is being built, try again in a few minutes\n");
 		return 1;
 	}
-	return locked.value;
+	return outcome.value;
 }

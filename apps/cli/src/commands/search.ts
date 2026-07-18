@@ -5,8 +5,7 @@ import { resolveHome } from "../core/home.js";
 import { withRetrievalLock } from "../core/lock.js";
 import {
 	assertFts5,
-	closeDatabase,
-	openAndRefresh,
+	readRetrieval,
 	rebuildRetrieval,
 	type SearchFilters,
 	type SearchHit,
@@ -180,8 +179,8 @@ export async function runSearch(argv: string[]): Promise<number> {
 	assertFts5();
 	const home = resolveHome();
 	const config = loadConfig(home);
-	const locked = await withRetrievalLock(home.statePath, async () => {
-		if (options.rebuild) {
+	if (options.rebuild) {
+		const locked = await withRetrievalLock(home.statePath, async () => {
 			const report = await rebuildRetrieval(home, config);
 			if (options.json) {
 				process.stdout.write(`${JSON.stringify({ v: 1, ...report })}\n`);
@@ -192,9 +191,18 @@ export async function runSearch(argv: string[]): Promise<number> {
 				);
 			}
 			return 0;
+		});
+		if (!locked.acquired) {
+			// DRAFT copy
+			process.stderr.write("packbat search: retrieval is already running\n");
+			return 1;
 		}
-		const database = await openAndRefresh(home, config);
-		try {
+		return locked.value;
+	}
+	const outcome = await readRetrieval(
+		home,
+		config,
+		(database) => {
 			const filters: SearchFilters = {
 				harness: options.harness,
 				machine: options.machine,
@@ -225,14 +233,18 @@ export async function runSearch(argv: string[]): Promise<number> {
 				}
 			}
 			return 0;
-		} finally {
-			closeDatabase(database);
-		}
-	});
-	if (!locked.acquired) {
+		},
+		() => {
+			// DRAFT copy
+			process.stderr.write(
+				"packbat search: the retrieval index is refreshing, results may be missing the newest sessions\n",
+			);
+		},
+	);
+	if (outcome.kind === "building") {
 		// DRAFT copy
-		process.stderr.write("packbat search: retrieval is already running\n");
+		process.stderr.write("packbat search: the retrieval index is being built, try again in a few minutes\n");
 		return 1;
 	}
-	return locked.value;
+	return outcome.value;
 }

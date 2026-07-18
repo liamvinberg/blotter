@@ -1,7 +1,13 @@
 import { loadConfig } from "../core/config.js";
 import { resolveHome } from "../core/home.js";
-import { withRetrievalLock } from "../core/lock.js";
-import { assertFts5, closeDatabase, openAndRefresh, retrievalDatabasePath } from "../retrieval/database.js";
+import { tryRetrievalLock, withRetrievalLock } from "../core/lock.js";
+import {
+	assertFts5,
+	closeDatabase,
+	openAndRefresh,
+	openStaleRetrieval,
+	retrievalDatabasePath,
+} from "../retrieval/database.js";
 import { queryRetrieval, type RetrievalQueryResult } from "../retrieval/query.js";
 
 // DRAFT copy. Usage is pinned byte-for-byte by the retrieval contract.
@@ -66,14 +72,27 @@ export async function runQuery(argv: string[]): Promise<number> {
 	assertFts5();
 	const home = resolveHome();
 	const config = loadConfig(home);
-	const locked = await withRetrievalLock(home.statePath, async () => {
+	const refreshOnly = async (): Promise<void> => {
 		const database = await openAndRefresh(home, config);
 		closeDatabase(database);
-	});
+	};
+	const locked = await tryRetrievalLock(home.statePath, refreshOnly);
 	if (!locked.acquired) {
-		// DRAFT copy
-		process.stderr.write("packbat query: retrieval is already running\n");
-		return 1;
+		const staleDatabase = openStaleRetrieval(home);
+		if (staleDatabase === null) {
+			const waited = await withRetrievalLock(home.statePath, refreshOnly);
+			if (!waited.acquired) {
+				// DRAFT copy
+				process.stderr.write("packbat query: the retrieval index is being built, try again in a few minutes\n");
+				return 1;
+			}
+		} else {
+			closeDatabase(staleDatabase);
+			// DRAFT copy
+			process.stderr.write(
+				"packbat query: the retrieval index is refreshing, results may be missing the newest sessions\n",
+			);
+		}
 	}
 	const result = queryRetrieval(retrievalDatabasePath(home), options.sql);
 	if (options.json) {

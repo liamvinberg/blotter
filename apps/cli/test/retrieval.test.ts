@@ -858,6 +858,58 @@ describe("packbat retrieval", () => {
 		expect(Date.now() - startedAt).toBeGreaterThanOrEqual(14_500);
 	});
 
+	test("verbs serve stale results from the existing index while a refresh holds the lock", async () => {
+		const test = await layout();
+		await writeArchivedJsonl({
+			layout: test,
+			harness: "claude-code",
+			unit: CLAUDE_ID,
+			relPath: `-synthetic/${CLAUDE_ID}.jsonl`,
+			lines: [{ type: "user", message: { role: "user", content: "stale needle" } }],
+		});
+		const warm = await command(test, ["search", "stale needle"]);
+		expect(warm.code, warm.stderr).toBe(0);
+
+		const statePath = join(test.packbatHome, "state");
+		await mkdir(statePath, { recursive: true });
+		await writeFile(
+			join(statePath, "retrieval.lock"),
+			`${JSON.stringify({ pid: process.pid, startedAt: "2026-01-02T03:04:05.000Z" })}\n`,
+		);
+		const startedAt = Date.now();
+		const search = await command(test, ["search", "stale needle"]);
+		expect(search.code, search.stderr).toBe(0);
+		expect(search.stdout).toContain("stale needle");
+		expect(search.stderr).toContain("the retrieval index is refreshing");
+
+		const sessions = await command(test, ["sessions"]);
+		expect(sessions.code, sessions.stderr).toBe(0);
+		expect(sessions.stderr).toContain("the retrieval index is refreshing");
+
+		const query = await command(test, ["query", "SELECT count(*) AS units FROM units"]);
+		expect(query.code, query.stderr).toBe(0);
+		expect(query.stdout).toContain("1");
+		expect(query.stderr).toContain("the retrieval index is refreshing");
+		expect(Date.now() - startedAt).toBeLessThan(10_000);
+	}, 30_000);
+
+	test("search reports the first index build when the lock is held before any cache exists", {
+		timeout: 20_000,
+	}, async () => {
+		const test = await layout();
+		const statePath = join(test.packbatHome, "state");
+		await mkdir(statePath, { recursive: true });
+		await writeFile(
+			join(statePath, "retrieval.lock"),
+			`${JSON.stringify({ pid: process.pid, startedAt: "2026-01-02T03:04:05.000Z" })}\n`,
+		);
+		const startedAt = Date.now();
+		const result = await command(test, ["search", "anything"]);
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("the retrieval index is being built");
+		expect(Date.now() - startedAt).toBeGreaterThanOrEqual(14_500);
+	});
+
 	test("search waits for the retrieval writer lock to be released", async () => {
 		const test = await layout();
 		await writeArchivedJsonl({

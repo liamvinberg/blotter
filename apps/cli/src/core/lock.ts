@@ -131,3 +131,8 @@ export async function withSyncLock<T>(statePath: string, fn: () => Promise<T>): 
 export async function withRetrievalLock<T>(statePath: string, fn: () => Promise<T>): Promise<SyncLockResult<T>> {
 	return await withLock(statePath, "retrieval", fn, true);
 }
+
+/** Like withRetrievalLock but returns immediately when a live owner holds the lock. */
+export async function tryRetrievalLock<T>(statePath: string, fn: () => Promise<T>): Promise<SyncLockResult<T>> {
+	return await withLock(statePath, "retrieval", fn, false);
+}

@@ -8,6 +8,7 @@ import type { PackbatConfig } from "../core/config.js";
 import { PackbatError } from "../core/errors.js";
 import { isEnoent } from "../core/fs.js";
 import type { PackbatHome } from "../core/home.js";
+import { tryRetrievalLock, withRetrievalLock } from "../core/lock.js";
 import { getReader } from "../readers/registry.js";
 import { readArchiveCatalog } from "./catalog.js";
 import type { ArchivedRetrievalUnit, ReadRole, ReadTurn } from "./types.js";
@@ -16,7 +17,10 @@ const SCHEMA_VERSION = 1;
 
 function newDatabase(path: string): DatabaseSync {
 	const sqlite = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-	return new sqlite.DatabaseSync(path);
+	const database = new sqlite.DatabaseSync(path);
+	// WAL lets stale read-only sessions coexist with the refresh writer.
+	database.exec("PRAGMA journal_mode = WAL");
+	return database;
 }
 
 const SCHEMA = `
@@ -181,6 +185,70 @@ interface HitRow {
 
 export function retrievalDatabasePath(home: PackbatHome): string {
 	return join(home.cachePath, "retrieval.sqlite");
+}
+
+/** Read-only handle on the existing cache for queries while a refresh runs; null when there is nothing servable. */
+export function openStaleRetrieval(home: PackbatHome): DatabaseSync | null {
+	const sqlite = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+	let database: DatabaseSync;
+	try {
+		database = new sqlite.DatabaseSync(retrievalDatabasePath(home), { readOnly: true });
+	} catch {
+		return null;
+	}
+	try {
+		const version = (database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+		if (version === SCHEMA_VERSION) {
+			return database;
+		}
+	} catch {
+		// Fall through to close and report nothing servable.
+	}
+	database.close();
+	return null;
+}
+
+export type RetrievalRead<T> = { kind: "done"; value: T; stale: boolean } | { kind: "building" };
+
+/**
+ * Runs fn against a fresh index when the retrieval lock is free, against the existing
+ * cache read-only when a live refresh holds it, and reports "building" only when there
+ * is nothing servable after the lock wait.
+ */
+export async function readRetrieval<T>(
+	home: PackbatHome,
+	config: PackbatConfig,
+	fn: (database: DatabaseSync) => T,
+	onStale?: () => void,
+): Promise<RetrievalRead<T>> {
+	const withFresh = async (): Promise<T> => {
+		const database = await openAndRefresh(home, config);
+		try {
+			return fn(database);
+		} finally {
+			closeDatabase(database);
+		}
+	};
+	const immediate = await tryRetrievalLock(home.statePath, withFresh);
+	if (immediate.acquired) {
+		return { kind: "done", value: immediate.value, stale: false };
+	}
+	const staleDatabase = openStaleRetrieval(home);
+	if (staleDatabase !== null) {
+		try {
+			onStale?.();
+			return { kind: "done", value: fn(staleDatabase), stale: true };
+		} catch {
+			return { kind: "building" };
+		} finally {
+			closeDatabase(staleDatabase);
+		}
+	}
+	const waited = await withRetrievalLock(home.statePath, withFresh);
+	if (waited.acquired) {
+		return { kind: "done", value: waited.value, stale: false };
+	}
+	return { kind: "building" };
 }
 
 export function assertFts5(): void {
