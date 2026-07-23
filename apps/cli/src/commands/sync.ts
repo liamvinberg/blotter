@@ -2,12 +2,18 @@ import { cloudUpdateAvailableVersion } from "../cloud/api-fetch.js";
 import { sweep } from "../core/archive.js";
 import { assertZstdSupport } from "../core/compress.js";
 import { loadConfig, type PackbatConfig } from "../core/config.js";
+import { formatMegabytes } from "../core/format.js";
 import { type PackbatHome, resolveHome } from "../core/home.js";
 import { lockHolderStartTime, withRetrievalLock, withSyncLock } from "../core/lock.js";
 import { appendLog } from "../core/log.js";
 import { writeRunStamps } from "../core/stamps.js";
-import { mirrorOffbox, type RemoteMirrorOutcome } from "../offbox/mirror.js";
-import { publishOffbox, type RemotePublishOutcome, remindOffboxSkipped } from "../offbox/outbox.js";
+import { type MirrorProgress, mirrorOffbox, type RemoteMirrorOutcome } from "../offbox/mirror.js";
+import {
+	type OffboxProgress,
+	publishOffbox,
+	type RemotePublishOutcome,
+	remindOffboxSkipped,
+} from "../offbox/outbox.js";
 import { assertFts5, closeDatabase, openAndRefresh } from "../retrieval/database.js";
 
 const USAGE = "Usage: packbat sync\n";
@@ -16,18 +22,66 @@ export interface SyncOutputOptions {
 	writeSummary?: boolean;
 	onSummary?: (summary: string) => void;
 	onBusy?: () => void;
-	onOffboxProgress?: (destination: string, done: number, total: number) => void;
+	onOffboxProgress?: (destination: string, progress: OffboxProgress) => void;
+	onMirrorProgress?: (destination: string, progress: MirrorProgress) => void;
 }
 
-function ttyOffboxProgress(): ((destination: string, done: number, total: number) => void) | undefined {
+function ttyOffboxProgress(): ((destination: string, progress: OffboxProgress) => void) | undefined {
 	if (!process.stderr.isTTY) return undefined;
-	let lastReported = 0;
-	return (destination, done, total) => {
-		if (done < lastReported) lastReported = 0;
-		if (done !== 0 && done !== total && done - lastReported < 25) return;
-		lastReported = done;
-		process.stderr.write(`\rpackbat sync: off-box ${destination}: ${done}/${total} uploaded`); // DRAFT copy
-		if (done === total) process.stderr.write("\n");
+	let lastDestination: string | undefined;
+	let lastPaintedAt = 0;
+	let lastProgress: OffboxProgress | undefined;
+	return (destination, progress) => {
+		const first = destination !== lastDestination;
+		const last = progress.done === progress.total;
+		if (
+			lastProgress !== undefined &&
+			destination === lastDestination &&
+			progress.done === lastProgress.done &&
+			progress.total === lastProgress.total &&
+			progress.bytes === lastProgress.bytes &&
+			progress.totalBytes === lastProgress.totalBytes
+		) {
+			return;
+		}
+		const now = Date.now();
+		if (!first && !last && now - lastPaintedAt < 250) return;
+		lastDestination = destination;
+		lastPaintedAt = now;
+		lastProgress = progress;
+		process.stderr.write(
+			`\rpackbat sync: off-box ${destination}: ${progress.done}/${progress.total}, ${formatMegabytes(progress.bytes)} of ${formatMegabytes(progress.totalBytes)} MB uploaded`, // DRAFT copy
+		);
+		if (last) process.stderr.write("\n");
+	};
+}
+
+function ttyMirrorProgress(): ((destination: string, progress: MirrorProgress) => void) | undefined {
+	if (!process.stderr.isTTY) return undefined;
+	let lastKey: string | undefined;
+	let lastPaintedAt = 0;
+	let lastProgress: MirrorProgress | undefined;
+	return (destination, progress) => {
+		const key = `${destination}\0${progress.machine}`;
+		const first = key !== lastKey;
+		const last = progress.done === progress.total;
+		if (
+			lastProgress !== undefined &&
+			key === lastKey &&
+			progress.done === lastProgress.done &&
+			progress.total === lastProgress.total
+		) {
+			return;
+		}
+		const now = Date.now();
+		if (!first && !last && now - lastPaintedAt < 250) return;
+		lastKey = key;
+		lastPaintedAt = now;
+		lastProgress = progress;
+		process.stderr.write(
+			`\rpackbat sync: mirror ${destination} ${progress.machine}: ${progress.done}/${progress.total} pulled`, // DRAFT copy
+		);
+		if (last) process.stderr.write("\n");
 	};
 }
 
@@ -112,7 +166,12 @@ export async function runSync(argv: string[], output: SyncOutputOptions = {}): P
 						output.onOffboxProgress ?? ttyOffboxProgress(),
 					);
 					try {
-						const mirror = await mirrorOffbox(home, config, config.offbox);
+						const mirror = await mirrorOffbox(
+							home,
+							config,
+							config.offbox,
+							output.onMirrorProgress ?? ttyMirrorProgress(),
+						);
 						mirrorOutcomes = mirror.outcomes;
 						mirrored = mirror.pulled;
 					} catch (error) {

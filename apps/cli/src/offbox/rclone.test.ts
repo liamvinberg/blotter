@@ -1,6 +1,11 @@
 import { accessSync, constants } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { classifyRcloneOAuthFailure, discoverRclone, joinRcloneDestination } from "./rclone.js";
+import {
+	classifyRcloneOAuthFailure,
+	discoverRclone,
+	joinRcloneDestination,
+	parseRcloneProgressLine,
+} from "./rclone.js";
 
 const wellKnownRclone = ["/opt/homebrew/bin/rclone", "/usr/local/bin/rclone", "/usr/bin/rclone"].find((path) => {
 	try {
@@ -35,5 +40,25 @@ describe("rclone destinations", () => {
 
 	test.skipIf(wellKnownRclone === undefined)("finds rclone in a well-known location after PATH search", async () => {
 		expect(await discoverRclone({ PATH: "/usr/bin" })).toBe(wellKnownRclone);
+	});
+});
+
+describe("rclone progress", () => {
+	test("parses a completed object", () => {
+		expect(
+			parseRcloneProgressLine(
+				'{"level":"info","msg":"Copied (new)","object":"machine-a/claude/projects/session.jsonl.age"}',
+			),
+		).toEqual({ object: "machine-a/claude/projects/session.jsonl.age" });
+	});
+
+	test("parses cumulative uploaded bytes", () => {
+		expect(parseRcloneProgressLine('{"level":"notice","msg":"","stats":{"bytes":43210}}')).toEqual({
+			bytes: 43_210,
+		});
+	});
+
+	test("ignores non-JSON noise", () => {
+		expect(parseRcloneProgressLine("rclone wrote an ordinary diagnostic")).toBeNull();
 	});
 });

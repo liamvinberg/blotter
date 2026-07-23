@@ -22,6 +22,12 @@ export interface MirrorResult {
 	pulled: number;
 }
 
+export interface MirrorProgress {
+	machine: string;
+	done: number;
+	total: number;
+}
+
 interface MachineMirrorResult {
 	pulled: number;
 	errors: string[];
@@ -115,6 +121,7 @@ async function mirrorMachine(options: {
 	archiveRoot: string;
 	currentMachine: string;
 	handle: string;
+	onProgress?: (progress: MirrorProgress) => void;
 }): Promise<MachineMirrorResult | null> {
 	await mkdir(options.archiveRoot, { recursive: true });
 	const temporaryIndexPath = join(options.archiveRoot, "index.jsonl");
@@ -154,39 +161,46 @@ async function mirrorMachine(options: {
 		}
 
 		let pulled = 0;
+		let done = 0;
 		const errors: string[] = [];
 		const listedObjectPaths = new Set(objects);
 		const verifiedRecords = new Set<string>();
 		const failedRecords = new Set<string>();
+		options.onProgress?.({ machine: localMachine, done, total: objects.length });
 		for (const objectPath of objects) {
-			const parts = safeRelativeParts(objectPath);
-			if (parts === null) {
-				errors.push(`${localMachine}/${objectPath}: unsafe remote object path`);
-				continue;
-			}
-			const record = index.records.get(objectPath);
 			try {
-				if (
-					await pullObject({
-						remote: options.remote,
-						identity: options.identity,
-						localMachine,
-						remoteMachine: options.handle,
-						objectPath,
-						destination: join(machineRoot, ...parts),
-						record,
-					})
-				) {
-					pulled += 1;
+				const parts = safeRelativeParts(objectPath);
+				if (parts === null) {
+					errors.push(`${localMachine}/${objectPath}: unsafe remote object path`);
+					continue;
 				}
-				if (record !== undefined) {
-					verifiedRecords.add(record.path);
+				const record = index.records.get(objectPath);
+				try {
+					if (
+						await pullObject({
+							remote: options.remote,
+							identity: options.identity,
+							localMachine,
+							remoteMachine: options.handle,
+							objectPath,
+							destination: join(machineRoot, ...parts),
+							record,
+						})
+					) {
+						pulled += 1;
+					}
+					if (record !== undefined) {
+						verifiedRecords.add(record.path);
+					}
+				} catch (error) {
+					if (record !== undefined) {
+						failedRecords.add(record.path);
+					}
+					errors.push(`${localMachine}/${objectPath}: ${error instanceof Error ? error.message : String(error)}`);
 				}
-			} catch (error) {
-				if (record !== undefined) {
-					failedRecords.add(record.path);
-				}
-				errors.push(`${localMachine}/${objectPath}: ${error instanceof Error ? error.message : String(error)}`);
+			} finally {
+				done += 1;
+				options.onProgress?.({ machine: localMachine, done, total: objects.length });
 			}
 		}
 
@@ -238,6 +252,7 @@ async function mirrorRemote(
 	config: PackbatConfig,
 	identity: string,
 	remote: ArchiveRemote,
+	onProgress?: (progress: MirrorProgress) => void,
 ): Promise<RemoteMirrorOutcome | null> {
 	const listedMachines = await remote.listMachines();
 	if (listedMachines === null) {
@@ -258,6 +273,7 @@ async function mirrorRemote(
 				archiveRoot: config.archiveRoot,
 				currentMachine: config.machine,
 				handle,
+				...(onProgress === undefined ? {} : { onProgress }),
 			});
 			if (result === null) {
 				continue;
@@ -300,6 +316,7 @@ export async function mirrorOffbox(
 	home: PackbatHome,
 	config: PackbatConfig,
 	offbox: ConfiguredOffbox,
+	onProgress?: (destination: string, progress: MirrorProgress) => void,
 ): Promise<MirrorResult> {
 	let identityContents: string;
 	try {
@@ -316,7 +333,9 @@ export async function mirrorOffbox(
 	for (const remoteConfig of offbox.remotes) {
 		const remote = createArchiveRemote(home, remoteConfig);
 		try {
-			const outcome = await mirrorRemote(home, config, identity, remote);
+			const outcome = await mirrorRemote(home, config, identity, remote, (progress) =>
+				onProgress?.(remote.destination, progress),
+			);
 			if (outcome !== null) {
 				outcomes.push(outcome);
 			}

@@ -21,14 +21,22 @@ import {
 	remoteFileExists,
 } from "./rclone.js";
 
+export interface PutObjectsEvents {
+	onObject?: (key: string) => void;
+	onBytes?: (bytes: number) => void;
+}
+
 export interface ArchiveRemote {
 	readonly config: RemoteConfig;
 	readonly destination: string;
 	readonly supportsMirror: boolean;
 	readonly mirrorHandleIsName: boolean;
 	indexExists(machine: string): Promise<boolean>;
-	/** onObject fires per uploaded object with its machine-relative key; remotes without per-object events never call it. */
-	putArchiveObjects(machine: string, sourceRoot: string, onObject?: (key: string) => void): Promise<void>;
+	/**
+	 * onObject fires per completed object with its machine-relative key, allowing interrupted rclone and cloud
+	 * backfills to resume from uploaded.jsonl. onBytes reports cumulative uploaded bytes for rclone only.
+	 */
+	putArchiveObjects(machine: string, sourceRoot: string, events?: PutObjectsEvents): Promise<void>;
 	putIndex(machine: string, sourcePath: string): Promise<void>;
 	getIndex(machine: string, destinationPath: string): Promise<void>;
 	getArchiveObject(machine: string, archivePath: string, destinationPath: string): Promise<void>;
@@ -52,8 +60,12 @@ class RcloneArchiveRemote implements ArchiveRemote {
 		);
 	}
 
-	async putArchiveObjects(_machine: string, sourceRoot: string, _onObject?: (key: string) => void): Promise<void> {
-		await copyTree(sourceRoot, this.config.destination, this.config.rcloneConfig);
+	async putArchiveObjects(machine: string, sourceRoot: string, events?: PutObjectsEvents): Promise<void> {
+		const machinePrefix = `${machine}/`;
+		await copyTree(sourceRoot, this.config.destination, this.config.rcloneConfig, {
+			onObject: (path) => events?.onObject?.(path.startsWith(machinePrefix) ? path.slice(machinePrefix.length) : path),
+			...(events?.onBytes === undefined ? {} : { onBytes: events.onBytes }),
+		});
 	}
 
 	async putIndex(machine: string, sourcePath: string): Promise<void> {
@@ -160,7 +172,7 @@ class CloudArchiveRemote implements ArchiveRemote {
 		return (await cloudDownloadUrl(this.home, this.machineRemoteId(machine), "index.jsonl.age")) !== null;
 	}
 
-	async putArchiveObjects(machine: string, sourceRoot: string, onObject?: (key: string) => void): Promise<void> {
+	async putArchiveObjects(machine: string, sourceRoot: string, events?: PutObjectsEvents): Promise<void> {
 		this.sweepId = randomUUID();
 		const objects = await archiveCiphertexts(sourceRoot, machine);
 		this.expectedArchiveCount = objects.length;
@@ -179,7 +191,7 @@ class CloudArchiveRemote implements ArchiveRemote {
 						path: object.path,
 						sweepId: this.sweepId,
 					});
-					onObject?.(object.key);
+					events?.onObject?.(object.key);
 				} catch (error) {
 					failure ??= { error };
 					return;

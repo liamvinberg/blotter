@@ -47,6 +47,13 @@ export type RemotePublishOutcome =
 	| { destination: string; ok: true; finishedAt: string; uploaded: number; bytes: number; indexUploaded: boolean }
 	| { destination: string; ok: false; error: string };
 
+export interface OffboxProgress {
+	done: number;
+	total: number;
+	bytes: number;
+	totalBytes: number;
+}
+
 function isUploadedRecord(value: unknown): value is UploadedRecord {
 	if (typeof value !== "object" || value === null) {
 		return false;
@@ -167,7 +174,7 @@ async function publishRemote(
 	config: PackbatConfig,
 	offbox: ConfiguredOffbox,
 	remoteConfig: RemoteConfig,
-	onProgress?: (done: number, total: number) => void,
+	onProgress?: (progress: OffboxProgress) => void,
 ): Promise<RemotePublishOutcome> {
 	const machinePath = join(config.archiveRoot, config.machine);
 	const indexPath = join(machinePath, "index.jsonl");
@@ -204,20 +211,37 @@ async function publishRemote(
 	const outboxPath = join(statePath, "outbox");
 	await rm(outboxPath, { recursive: true, force: true });
 
-	let bytes = 0;
-	for (const file of changed) {
-		bytes += await encryptFile(file.absolutePath, join(outboxPath, `${file.path}.age`), offbox.recipient);
-	}
 	const objectKey = (file: ArchiveFile): string =>
 		`${file.path}.age`
 			.slice(config.machine.length + sep.length)
 			.split(sep)
 			.join("/");
+	const ciphertextBytesByKey = new Map<string, number>();
+	let bytes = 0;
+	for (const file of changed) {
+		const ciphertextBytes = await encryptFile(
+			file.absolutePath,
+			join(outboxPath, `${file.path}.age`),
+			offbox.recipient,
+		);
+		ciphertextBytesByKey.set(objectKey(file), ciphertextBytes);
+		bytes += ciphertextBytes;
+	}
 	const changedByKey = new Map(changed.map((file) => [objectKey(file), file]));
 	const checkpointed = new Set<string>();
 	let ledgerChain: Promise<void> = Promise.resolve();
 	let ledgerError: unknown;
 	let done = 0;
+	let checkpointedBytes = 0;
+	let remoteBytes = 0;
+	const reportProgress = (): void => {
+		onProgress?.({
+			done,
+			total: changed.length,
+			bytes: Math.max(remoteBytes, checkpointedBytes),
+			totalBytes: bytes,
+		});
+	};
 	// Checkpoint the ledger per uploaded object so an interrupted backfill resumes
 	// where it stopped instead of re-uploading everything.
 	const checkpoint = (key: string): void => {
@@ -225,7 +249,8 @@ async function publishRemote(
 		if (file === undefined) return;
 		checkpointed.add(file.path);
 		done += 1;
-		onProgress?.(done, changed.length);
+		checkpointedBytes += ciphertextBytesByKey.get(key) ?? 0;
+		reportProgress();
 		ledgerChain = ledgerChain
 			.then(async () => {
 				await appendFile(
@@ -247,15 +272,24 @@ async function publishRemote(
 	};
 	if (changed.length > 0) {
 		await mkdir(statePath, { recursive: true });
-		onProgress?.(0, changed.length);
+		reportProgress();
 		try {
-			await remote.putArchiveObjects(config.machine, outboxPath, checkpoint);
+			await remote.putArchiveObjects(config.machine, outboxPath, {
+				onObject: checkpoint,
+				onBytes(uploadedBytes) {
+					remoteBytes = Math.max(remoteBytes, uploadedBytes);
+					reportProgress();
+				},
+			});
 		} finally {
 			await ledgerChain;
 		}
 		if (ledgerError !== undefined) {
 			throw ledgerError;
 		}
+		done = changed.length;
+		checkpointedBytes = bytes;
+		reportProgress();
 	}
 
 	const indexContents = await readFile(indexPath);
@@ -307,14 +341,14 @@ export async function publishOffbox(
 	home: PackbatHome,
 	config: PackbatConfig,
 	offbox: ConfiguredOffbox,
-	onProgress?: (destination: string, done: number, total: number) => void,
+	onProgress?: (destination: string, progress: OffboxProgress) => void,
 ): Promise<RemotePublishOutcome[]> {
 	const outcomes: RemotePublishOutcome[] = [];
 	for (const remote of offbox.remotes) {
 		try {
 			const destination = remoteDestination(remote);
 			outcomes.push(
-				await publishRemote(home, config, offbox, remote, (done, total) => onProgress?.(destination, done, total)),
+				await publishRemote(home, config, offbox, remote, (progress) => onProgress?.(destination, progress)),
 			);
 		} catch (error) {
 			outcomes.push({

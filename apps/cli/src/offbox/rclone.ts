@@ -7,6 +7,7 @@ import { resolveHome } from "../core/home.js";
 import { ensurePrivateManagedRcloneConfig } from "./managed-rclone-config.js";
 
 export type RcloneConfigMode = "managed" | "default";
+export type RcloneProgressEvent = { object: string } | { bytes: number };
 export type RcloneOAuthFailure =
 	| { kind: "grant"; errorClass: "expired_access_token" | "invalid_access_token" | "invalid_grant" }
 	| {
@@ -16,6 +17,33 @@ export type RcloneOAuthFailure =
 
 const RCLONE_MISSING =
 	"rclone was not found on PATH; install it with `brew install rclone` (macOS) or `apt install rclone` (Debian/Ubuntu)";
+
+export function parseRcloneProgressLine(line: string): RcloneProgressEvent | null {
+	let value: unknown;
+	try {
+		value = JSON.parse(line);
+	} catch {
+		return null;
+	}
+	if (typeof value !== "object" || value === null) {
+		return null;
+	}
+	const record = value as Record<string, unknown>;
+	if (
+		typeof record.msg === "string" &&
+		(record.msg.startsWith("Copied") || record.msg === "Unchanged skipping") &&
+		typeof record.object === "string"
+	) {
+		return { object: record.object };
+	}
+	if (typeof record.stats === "object" && record.stats !== null) {
+		const bytes = (record.stats as Record<string, unknown>).bytes;
+		if (typeof bytes === "number") {
+			return { bytes };
+		}
+	}
+	return null;
+}
 
 export async function discoverRclone(env: NodeJS.ProcessEnv = process.env): Promise<string> {
 	const fromPath = commandOnPath("rclone", env);
@@ -48,6 +76,7 @@ async function runRclone(
 	command: "copy" | "copyto" | "lsjson",
 	args: string[],
 	mode: RcloneConfigMode,
+	onStderrLine?: (line: string) => void,
 ): Promise<string> {
 	const executable = await discoverRclone();
 	const configArguments = await managedConfigArguments(mode);
@@ -58,16 +87,28 @@ async function runRclone(
 		});
 		let stdout = "";
 		let stderr = "";
+		let stderrLine = "";
 		child.stdout.on("data", (chunk: Buffer) => {
 			stdout += chunk.toString("utf8");
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
-			stderr += chunk.toString("utf8");
+			const text = chunk.toString("utf8");
+			stderr += text;
+			if (onStderrLine !== undefined) {
+				const lines = `${stderrLine}${text}`.split(/\r?\n/u);
+				stderrLine = lines.pop() ?? "";
+				for (const line of lines) {
+					onStderrLine(line);
+				}
+			}
 		});
 		child.on("error", (error) => {
 			reject(new PackbatError(`could not start rclone: ${error.message}`));
 		});
 		child.on("close", (code) => {
+			if (onStderrLine !== undefined && stderrLine !== "") {
+				onStderrLine(stderrLine);
+			}
 			if (code === 0) {
 				resolve(stdout);
 				return;
@@ -166,8 +207,26 @@ export async function remoteFileExists(destinationFile: string, mode: RcloneConf
 	return parseRcloneList(output).length > 0;
 }
 
-export async function copyTree(source: string, destination: string, mode: RcloneConfigMode): Promise<void> {
-	await runRclone("copy", [source, destination], mode);
+export async function copyTree(
+	source: string,
+	destination: string,
+	mode: RcloneConfigMode,
+	events?: { onObject?: (path: string) => void; onBytes?: (bytes: number) => void },
+): Promise<void> {
+	await runRclone(
+		"copy",
+		[source, destination, "--use-json-log", "--log-level", "INFO", "--stats", "1s", "--stats-log-level", "NOTICE"],
+		mode,
+		(line) => {
+			const event = parseRcloneProgressLine(line);
+			if (event === null) return;
+			if ("object" in event) {
+				events?.onObject?.(event.object);
+			} else {
+				events?.onBytes?.(event.bytes);
+			}
+		},
+	);
 }
 
 export async function copyFile(source: string, destinationFile: string, mode: RcloneConfigMode): Promise<void> {

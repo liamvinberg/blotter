@@ -1,11 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { encryptToRecipient } from "../src/offbox/age.js";
 import { renderRecoveryKit } from "../src/offbox/recovery-kit.js";
 import { deriveTestRecipient, generateTestIdentity } from "./helpers/age.js";
+import { makeClaudeStore } from "./helpers/fixtures.js";
 import {
 	acquireOAuthCallbackPort,
 	backspaces,
@@ -444,6 +447,7 @@ describe.sequential("interactive init wizard", () => {
 		const packbatHome = join(home, ".packbat");
 		const remoteRoot = join(home, "remote");
 		const kitPath = join(home, "packbat-recovery-kit.txt");
+		await makeClaudeStore(join(home, ".claude", "projects"), { main: {}, sidecars: [] });
 		const result = await runInteractiveCli(["init", "--no-activate"], { home, env: { PACKBAT_HOME: packbatHome } }, [
 			{ waitFor: "Archive root", reply: enter() },
 			{ waitFor: "Install this schedule?", reply: enter() },
@@ -466,7 +470,9 @@ describe.sequential("interactive init wizard", () => {
 		};
 		expect(await deriveTestRecipient(identity)).toBe(config.offbox.recipient);
 		expect((await stat(identityPath)).mode & 0o777).toBe(0o600);
-		expect(`${result.stdout}${result.stderr}`).toContain("Done. Run `packbat status`.");
+		const output = `${result.stdout}${result.stderr}`;
+		expect(output).toMatch(/Uploading to .*: 1 of 1, \d+\.\d of \d+\.\d MB/u);
+		expect(output).toContain("Done. Run `packbat status`.");
 	}, 60_000);
 
 	test("joins with an existing recovery kit without minting a new identity", async () => {
@@ -476,6 +482,32 @@ describe.sequential("interactive init wizard", () => {
 		const remoteRoot = join(home, "remote");
 		const kitPath = join(home, "existing-recovery-kit.txt");
 		const { identity, recipient } = await generateTestIdentity();
+		const foreignMachine = "second-machine";
+		const objectPath = "claude-code/projects/synthetic-session.jsonl.zst";
+		const plaintext = Buffer.from("synthetic archived session");
+		const record = {
+			v: 1,
+			path: objectPath,
+			harness: "claude-code",
+			machine: foreignMachine,
+			unit: "synthetic-session",
+			source: "/synthetic/session.jsonl",
+			sourceMtimeMs: Date.UTC(2026, 0, 2, 3, 4, 5),
+			sourceSize: plaintext.byteLength,
+			storedSize: plaintext.byteLength,
+			sha256: createHash("sha256").update(plaintext).digest("hex"),
+			archivedAt: "2026-01-02T03:04:06.000Z",
+			role: "main",
+		};
+		const remoteObjectPath = join(remoteRoot, foreignMachine, `${objectPath}.age`);
+		await mkdir(dirname(remoteObjectPath), { recursive: true });
+		await Promise.all([
+			writeFile(remoteObjectPath, await encryptToRecipient(recipient, plaintext)),
+			writeFile(
+				join(remoteRoot, foreignMachine, "index.jsonl.age"),
+				await encryptToRecipient(recipient, Buffer.from(`${JSON.stringify(record)}\n`)),
+			),
+		]);
 		await writeFile(
 			kitPath,
 			renderRecoveryKit({
@@ -508,6 +540,7 @@ describe.sequential("interactive init wizard", () => {
 		};
 		expect(config.offbox.recipient).toBe(recipient);
 		expect(output).not.toContain("Recovery kit destination");
+		expect(output).toContain(`Mirroring ${foreignMachine} from ${remoteRoot}:`);
 		expect(existsSync(join(home, "packbat-recovery-kit.txt"))).toBe(false);
 	}, 60_000);
 

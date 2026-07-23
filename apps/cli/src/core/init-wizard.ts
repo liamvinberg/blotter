@@ -16,6 +16,8 @@ import {
 	prepareBackblazeDestination,
 	prepareGoogleDriveHeadlessDestination,
 } from "../offbox/destination-setup.js";
+import type { MirrorProgress } from "../offbox/mirror.js";
+import type { OffboxProgress } from "../offbox/outbox.js";
 import { discoverRclone } from "../offbox/rclone.js";
 import { pickRcloneInstall } from "../offbox/rclone-install.js";
 import {
@@ -30,6 +32,7 @@ import { previewSchedule } from "../schedule/scheduler.js";
 import { loadConfig, type OffboxConfig, type PackbatConfig, remoteDestination } from "./config.js";
 import { errorMessage, PackbatError } from "./errors.js";
 import { commandOnPath } from "./exec.js";
+import { formatMegabytes } from "./format.js";
 import { expandTilde } from "./fs.js";
 import { resolveHome } from "./home.js";
 import { lockHolderStartTime } from "./lock.js";
@@ -669,7 +672,8 @@ export interface InitWizardActions {
 		writeSummary: false;
 		onSummary: (summary: string) => void;
 		onBusy: () => void;
-		onOffboxProgress: (destination: string, done: number, total: number) => void;
+		onOffboxProgress: (destination: string, progress: OffboxProgress) => void;
+		onMirrorProgress: (destination: string, progress: MirrorProgress) => void;
 	}) => Promise<number>;
 }
 
@@ -764,6 +768,7 @@ export async function runInitWizardWorkflow(
 	while (true) {
 		if (sweepCancelled) return 1;
 		let busy = false;
+		let progressReported = false;
 		syncCode = await actions.sync({
 			writeSummary: false,
 			onSummary(value) {
@@ -772,12 +777,23 @@ export async function runInitWizardWorkflow(
 			onBusy() {
 				busy = true;
 			},
-			onOffboxProgress(destination, done, total) {
-				if (done === 0 || done === total || done % 25 === 0) {
-					sweep.message(`Uploading to ${destination}: ${done} of ${total}`); // DRAFT copy
-				}
+			onOffboxProgress(destination, progress) {
+				progressReported = true;
+				sweep.message(
+					`Uploading to ${destination}: ${progress.done} of ${progress.total}, ${formatMegabytes(progress.bytes)} of ${formatMegabytes(progress.totalBytes)} MB`, // DRAFT copy
+				);
+			},
+			onMirrorProgress(destination, progress) {
+				progressReported = true;
+				sweep.message(
+					`Mirroring ${progress.machine} from ${destination}: ${progress.done} of ${progress.total}`, // DRAFT copy
+				);
 			},
 		});
+		if (!busy && progressReported) {
+			// Let Clack's 80 ms render loop paint the final progress message before stop replaces it.
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
 		if (!busy) break;
 		if (sweepCancelled) return 1;
 		sweep.message(await busySyncMessage(home.statePath));
