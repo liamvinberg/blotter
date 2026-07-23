@@ -69,7 +69,9 @@ async function billing(argv: string[]): Promise<number> {
 
 export async function runCloud(argv: string[]): Promise<number> {
 	if (!cloudEnabled()) {
-		process.stderr.write("Packbat Cloud is not available. Off-box copies go to a remote you own, run `packbat init`.\n"); // DRAFT copy
+		process.stderr.write(
+			"Packbat Cloud is not available. Off-box copies go to a remote you own, run `packbat init`.\n",
+		); // DRAFT copy
 		return 1;
 	}
 	const [command, ...rest] = argv;
